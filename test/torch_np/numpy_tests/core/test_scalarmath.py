@@ -6,34 +6,42 @@ import itertools
 import operator
 import sys
 import warnings
-
 from unittest import expectedFailure as xfail, skipIf as skipif, SkipTest
 
-# from numpy._utils import _pep440
+import numpy
 import pytest
-
-# from hypothesis import given, settings
-# from hypothesis.strategies import sampled_from
-# from hypothesis.extra import numpy as hynp
-
-import torch._numpy as np
 from pytest import raises as assert_raises
-from torch._numpy.testing import (
-    _gen_alignment_data,
-    assert_,
-    assert_almost_equal,
-    assert_equal,
-    #    assert_array_equal, suppress_warnings, _gen_alignment_data,
-    #    assert_warns,
-)
+
 from torch.testing._internal.common_utils import (
     instantiate_parametrized_tests,
     parametrize,
     run_tests,
+    skipIfTorchDynamo,
     slowTest as slow,
     subtest,
+    TEST_WITH_TORCHDYNAMO,
     TestCase,
+    xpassIfTorchDynamo_np,
 )
+
+
+if TEST_WITH_TORCHDYNAMO:
+    import numpy as np
+    from numpy.testing import (
+        _gen_alignment_data,
+        assert_,
+        assert_almost_equal,
+        assert_equal,
+    )
+else:
+    import torch._numpy as np
+    from torch._numpy.testing import (
+        _gen_alignment_data,
+        assert_,
+        assert_almost_equal,
+        assert_equal,
+    )
+
 
 skip = functools.partial(skipif, True)
 
@@ -103,20 +111,21 @@ class TestTypes(TestCase):
                 assert_equal(
                     c_scalar.dtype,
                     c_array.dtype,
-                    "error with types (%d/'%s' + %d/'%s')"
-                    % (k, np.dtype(atype).name, l, np.dtype(btype).name),
+                    "error with types "
+                    f"({k:d}/'{np.dtype(atype).name}' + {l:d}/'{np.dtype(btype).name}')",
                 )
 
     def test_type_create(self):
-        for k, atype in enumerate(types):
+        for _, atype in enumerate(types):
             a = np.array([1, 2, 3], atype)
             b = atype([1, 2, 3])
             assert_equal(a, b)
 
+    @skipIfTorchDynamo()  # freezes under torch.Dynamo (loop unrolling, huh)
     def test_leak(self):
         # test leak of scalar objects
         # a leak would show up in valgrind as still-reachable of ~2.6MB
-        for i in range(200000):
+        for _ in range(200000):
             np.add(1, 1)
 
 
@@ -155,7 +164,7 @@ class TestBaseMath(TestCase):
                 np.add(2, inp2, out=out)
                 assert_almost_equal(out, exp1 + 2, err_msg=msg)
 
-    @xfail  # (reason="pytorch does not have .view")
+    @xpassIfTorchDynamo_np  # (reason="pytorch does not have .view")
     def test_lower_align(self):
         # check data that is not aligned to element size
         # i.e doubles are aligned to 4 bytes on i386
@@ -186,7 +195,8 @@ class TestPower(TestCase):
             else:
                 assert_almost_equal(b, 6765201, err_msg=msg)
 
-    @xfail  # (reason="Value-based casting: (2)**(-2) -> 0 in pytorch.")
+    @skip(reason="NP_VER: fails on CI on older NumPy")
+    @xpassIfTorchDynamo_np  # (reason="Value-based casting: (2)**(-2) -> 0 in pytorch.")
     def test_integers_to_negative_integer_power(self):
         # Note that the combination of uint64 with a signed integer
         # has common type np.float64. The other combinations should all
@@ -272,7 +282,8 @@ def _signs(dt):
 @instantiate_parametrized_tests
 class TestModulus(TestCase):
     def test_modulus_basic(self):
-        dt = np.typecodes["AllInteger"] + np.typecodes["Float"]
+        # dt = np.typecodes["AllInteger"] + np.typecodes["Float"]
+        dt = "Bbhil" + "efd"
         for op in [floordiv_and_mod, divmod]:
             for dt1, dt2 in itertools.product(dt, dt):
                 for sg1, sg2 in itertools.product(_signs(dt1), _signs(dt2)):
@@ -317,7 +328,8 @@ class TestModulus(TestCase):
 
     def test_float_modulus_roundoff(self):
         # gh-6127
-        dt = np.typecodes["Float"]
+        # dt = np.typecodes["Float"]
+        dt = "efd"
         for op in [floordiv_and_mod, divmod]:
             for dt1, dt2 in itertools.product(dt, dt):
                 for sg1, sg2 in itertools.product((+1, -1), (+1, -1)):
@@ -333,7 +345,7 @@ class TestModulus(TestCase):
                     else:
                         assert_(b > rem >= 0, msg)
 
-    @parametrize("dt", np.typecodes["Float"])
+    @parametrize("dt", "efd")
     def test_float_modulus_corner_cases(self, dt):
         if dt == "e":
             # FIXME: make xfail
@@ -342,9 +354,9 @@ class TestModulus(TestCase):
         b = np.array(1.0, dtype=dt)
         a = np.nextafter(np.array(0.0, dtype=dt), -b)
         rem = operator.mod(a, b)
-        assert_(rem <= b, "dt: %s" % dt)
+        assert_(rem <= b, f"dt: {dt}")
         rem = operator.mod(-a, -b)
-        assert_(rem >= -b, "dt: %s" % dt)
+        assert_(rem >= -b, f"dt: {dt}")
 
         # Check nans, inf
         #     with suppress_warnings() as sup:
@@ -353,20 +365,20 @@ class TestModulus(TestCase):
         #         sup.filter(RuntimeWarning, "divide by zero encountered in floor_divide")
         #         sup.filter(RuntimeWarning, "divide by zero encountered in divmod")
         #         sup.filter(RuntimeWarning, "invalid value encountered in divmod")
-        for dt in np.typecodes["Float"]:
+        for dt in "efd":
             fone = np.array(1.0, dtype=dt)
             fzer = np.array(0.0, dtype=dt)
             finf = np.array(np.inf, dtype=dt)
             fnan = np.array(np.nan, dtype=dt)
             rem = operator.mod(fone, fzer)
-            assert_(np.isnan(rem), "dt: %s" % dt)
+            assert_(np.isnan(rem), f"dt: {dt}")
             # MSVC 2008 returns NaN here, so disable the check.
             # rem = operator.mod(fone, finf)
             # assert_(rem == fone, 'dt: %s' % dt)
             rem = operator.mod(fone, fnan)
-            assert_(np.isnan(rem), "dt: %s" % dt)
+            assert_(np.isnan(rem), f"dt: {dt}")
             rem = operator.mod(finf, fone)
-            assert_(np.isnan(rem), "dt: %s" % dt)
+            assert_(np.isnan(rem), f"dt: {dt}")
             for op in [floordiv_and_mod, divmod]:
                 div, mod = op(fone, fzer)
                 assert_(np.isinf(div)) and assert_(np.isnan(mod))
@@ -418,7 +430,7 @@ class TestComplexDivision(TestCase):
         for t in [np.complex64, np.complex128]:
             # tupled (numerator, denominator, expected)
             # for testing as expected == numerator/denominator
-            data = list()
+            data = []
 
             # trigger branch: real(fabs(denom)) > imag(fabs(denom))
             # followed by else condition as neither are == 0
@@ -451,7 +463,8 @@ class TestConversion(TestCase):
             a = np.array(l, dtype=T)
             assert_equal([int(_m) for _m in a], li)
 
-    @xfail  # (reason="pytorch does not emit this warning.")
+    @skipif(numpy.__version__ < "1.24", reason="NP_VER: fails on NumPy 1.23.x")
+    @xpassIfTorchDynamo_np  # (reason="pytorch does not emit this warning.")
     def test_iinfo_long_values_1(self):
         for code in "bBh":
             with pytest.warns(DeprecationWarning):
@@ -475,7 +488,7 @@ class TestConversion(TestCase):
             dtype(np.iinfo(dtype).max + 1)
 
         for code in [np.int_, np.longlong]:
-            assert_raises(RuntimeError, overflow_error_func, code)
+            assert_raises((OverflowError, RuntimeError), overflow_error_func, code)
 
     def test_numpy_scalar_relational_operators(self):
         # All integer
@@ -554,7 +567,7 @@ class TestConversion(TestCase):
 #            assert_equal( val, val2 )
 
 
-@xfail  # (reason="can delegate repr to pytorch")
+@xpassIfTorchDynamo_np  # (reason="can delegate repr to pytorch")
 class TestRepr(TestCase):
     def _test_type_repr(self, t):
         finfo = np.finfo(t)
@@ -717,6 +730,9 @@ class TestBitShifts(TestCase):
         # gh-2449
         dt = np.dtype(type_code)
         nbits = dt.itemsize * 8
+        if dt in (np.dtype(np.uint64), np.dtype(np.uint32), np.dtype(np.uint16)):
+            raise SkipTest("NYI: bitshift uint64")
+
         for val in [5, -5]:
             for shift in [nbits, nbits + 4]:
                 val_scl = np.array(val).astype(dt)[()]
@@ -789,7 +805,7 @@ def recursionlimit(n):
 @instantiate_parametrized_tests
 class TestScalarOpsMisc(TestCase):
     @xfail  # (reason="pytorch does not warn on overflow")
-    @parametrize("dtype", np.typecodes["AllInteger"])
+    @parametrize("dtype", "Bbhil")
     @parametrize(
         "operation",
         [
@@ -807,7 +823,7 @@ class TestScalarOpsMisc(TestCase):
             operation(min, max)
 
     @skip(reason="integer overflow UB: crashes pytorch under ASAN")
-    @parametrize("dtype", np.typecodes["Integer"])
+    @parametrize("dtype", "bhil")
     @parametrize(
         "operation",
         [
@@ -829,8 +845,9 @@ class TestScalarOpsMisc(TestCase):
         with pytest.warns(RuntimeWarning, match="overflow encountered"):
             operation(min, neg_1)
 
-    @xfail  # (reason="pytorch does not warn on overflow")
-    @parametrize("dtype", np.typecodes["UnsignedInteger"])
+    @skipif(numpy.__version__ < "1.24", reason="NP_VER: fails on NumPy 1.23.x")
+    @xpassIfTorchDynamo_np  # (reason="pytorch does not warn on overflow")
+    @parametrize("dtype", "B")
     def test_scalar_unsigned_integer_overflow(self, dtype):
         val = np.dtype(dtype).type(8)
         with pytest.warns(RuntimeWarning, match="overflow encountered"):

@@ -1,7 +1,6 @@
 #include <torch/optim/sgd.h>
 
 #include <torch/csrc/autograd/variable.h>
-#include <torch/nn/pimpl.h>
 #include <torch/optim/optimizer.h>
 #include <torch/optim/serialize.h>
 #include <torch/types.h>
@@ -12,8 +11,7 @@
 
 #include <functional>
 
-namespace torch {
-namespace optim {
+namespace torch::optim {
 
 SGDOptions::SGDOptions(double lr) : lr_(lr) {}
 
@@ -132,5 +130,4 @@ void SGD::load(serialize::InputArchive& archive) {
     }
   }
 }
-} // namespace optim
-} // namespace torch
+} // namespace torch::optim

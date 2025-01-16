@@ -1,10 +1,13 @@
+from __future__ import annotations
+
 import argparse
 import os
-import pathlib
 import sys
-from typing import Any, cast, Optional
+from pathlib import Path
+from typing import Any, cast
 
 import yaml
+
 
 try:
     # use faster C loader if available
@@ -12,24 +15,25 @@ try:
 except ImportError:
     from yaml import SafeLoader as YamlLoader  # type: ignore[assignment, misc]
 
+
 NATIVE_FUNCTIONS_PATH = "aten/src/ATen/native/native_functions.yaml"
 TAGS_PATH = "aten/src/ATen/native/tags.yaml"
 
 
 def generate_code(
-    gen_dir: pathlib.Path,
-    native_functions_path: Optional[str] = None,
-    tags_path: Optional[str] = None,
-    install_dir: Optional[str] = None,
-    subset: Optional[str] = None,
+    gen_dir: Path,
+    native_functions_path: str | None = None,
+    tags_path: str | None = None,
+    install_dir: str | None = None,
+    subset: str | None = None,
     disable_autograd: bool = False,
     force_schema_registration: bool = False,
     operator_selector: Any = None,
 ) -> None:
-    from torchgen.selective_build.selector import SelectiveBuilder
-
     from tools.autograd.gen_annotated_fn_args import gen_annotated
     from tools.autograd.gen_autograd import gen_autograd, gen_autograd_python
+
+    from torchgen.selective_build.selector import SelectiveBuilder
 
     # Build ATen based Variable classes
     if install_dir is None:
@@ -40,7 +44,7 @@ def generate_code(
     autograd_gen_dir = os.path.join(install_dir, "autograd", "generated")
     for d in (autograd_gen_dir, python_install_dir):
         os.makedirs(d, exist_ok=True)
-    autograd_dir = os.fspath(pathlib.Path(__file__).parent.parent / "autograd")
+    autograd_dir = os.fspath(Path(__file__).parent.parent / "autograd")
 
     if subset == "pybindings" or not subset:
         gen_autograd_python(
@@ -103,12 +107,13 @@ def get_selector_from_legacy_operator_selection_list(
 
 
 def get_selector(
-    selected_op_list_path: Optional[str],
-    operators_yaml_path: Optional[str],
+    selected_op_list_path: str | None,
+    operators_yaml_path: str | None,
 ) -> Any:
     # cwrap depends on pyyaml, so we can't import it earlier
-    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    sys.path.insert(0, root)
+    REPO_ROOT = Path(__file__).absolute().parents[2]
+    sys.path.insert(0, str(REPO_ROOT))
+
     from torchgen.selective_build.selector import SelectiveBuilder
 
     assert not (
@@ -132,8 +137,8 @@ def main() -> None:
     parser.add_argument("--tags-path")
     parser.add_argument(
         "--gen-dir",
-        type=pathlib.Path,
-        default=pathlib.Path("."),
+        type=Path,
+        default=Path("."),
         help="Root directory where to install files. Defaults to the current working directory.",
     )
     parser.add_argument(
@@ -184,6 +189,12 @@ def main() -> None:
     )
     options = parser.parse_args()
 
+    # Path: aten/src/ATen
+    aten_path = os.path.dirname(os.path.dirname(options.native_functions_path))
+    operator_selector = get_selector(
+        options.selected_op_list_path, options.operators_yaml_path
+    )
+
     generate_code(
         options.gen_dir,
         options.native_functions_path,
@@ -193,13 +204,32 @@ def main() -> None:
         options.disable_autograd,
         options.force_schema_registration,
         # options.selected_op_list
-        operator_selector=get_selector(
-            options.selected_op_list_path, options.operators_yaml_path
-        ),
+        operator_selector=operator_selector,
+    )
+
+    # Generate the python bindings for functionalization's `ViewMeta` classes.
+    from torchgen.gen_functionalization_type import (
+        gen_functionalization_view_meta_classes,
+    )
+
+    functionalization_templates_dir = os.path.join(aten_path, "templates")
+    functionalization_install_dir = os.path.join(
+        options.gen_dir, "torch/csrc/functionalization/generated"
+    )
+
+    os.makedirs(functionalization_install_dir, exist_ok=True)
+    assert os.path.isdir(functionalization_install_dir)
+    assert os.path.isdir(functionalization_templates_dir)
+
+    gen_functionalization_view_meta_classes(
+        options.native_functions_path or NATIVE_FUNCTIONS_PATH,
+        options.tags_path or TAGS_PATH,
+        selector=operator_selector,
+        install_dir=functionalization_install_dir,
+        template_dir=functionalization_templates_dir,
     )
 
     if options.gen_lazy_ts_backend:
-        aten_path = os.path.dirname(os.path.dirname(options.native_functions_path))
         ts_backend_yaml = os.path.join(aten_path, "native/ts_native_functions.yaml")
         ts_native_functions = "torch/csrc/lazy/ts_backend/ts_native_functions.cpp"
         ts_node_base = "torch/csrc/lazy/ts_backend/ts_node.h"

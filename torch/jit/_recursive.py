@@ -1,3 +1,4 @@
+# mypy: allow-untyped-defs
 import collections
 import functools
 import inspect
@@ -5,10 +6,8 @@ import sys
 import textwrap
 import types
 import warnings
-from typing import Dict, List, Set, Type
 
 import torch
-
 import torch._jit_internal as _jit_internal
 from torch._sources import fake_range
 from torch.jit._builtins import _find_builtin
@@ -102,7 +101,7 @@ def make_stubs_from_exported_methods(mod):
 
 def jit_ignored_properties(module):
     user_annotated_ignored_attributes = getattr(
-        module, "__jit_ignored_attributes__", list()
+        module, "__jit_ignored_attributes__", []
     )
 
     def get_properties_names(module):
@@ -184,8 +183,9 @@ def get_annotations(obj):
 
 def infer_concrete_type_builder(nn_module, share_types=True):
     """
-    Build a ConcreteModuleTypeBuilder from an nn.Module. This
-    ConcreteModuleType doesn't have a JIT type associated with it yet, it
+    Build a ConcreteModuleTypeBuilder from an nn.Module.
+
+    This ConcreteModuleType doesn't have a JIT type associated with it yet, it
     must be filled in by the caller.
     """
     concrete_type_builder = torch._C.ConcreteModuleTypeBuilder(type(nn_module))
@@ -204,7 +204,7 @@ def infer_concrete_type_builder(nn_module, share_types=True):
 
     # Get user-annotated ignored attributes.
     user_annotated_ignored_attributes = getattr(
-        nn_module, "__jit_ignored_attributes__", list()
+        nn_module, "__jit_ignored_attributes__", []
     )
     concrete_type_builder.add_ignored_attributes(user_annotated_ignored_attributes)
     ignored_properties = jit_ignored_properties(nn_module)
@@ -373,7 +373,6 @@ def infer_concrete_type_builder(nn_module, share_types=True):
                     f"\nThe error stack is reproduced here:\n{e}"
                 )
                 concrete_type_builder.add_failed_attribute(name, hint)
-                pass
 
             continue
 
@@ -421,20 +420,17 @@ def infer_concrete_type_builder(nn_module, share_types=True):
 
 
 class ConcreteTypeStore:
-    type_store: Dict[Type[Module], List[torch._C.ConcreteModuleType]]
-    methods_compiled: Set[torch._C.ConcreteModuleType]
+    type_store: dict[type[Module], list[torch._C.ConcreteModuleType]]
+    methods_compiled: set[torch._C.ConcreteModuleType]
 
-    def __init__(self):
+    def __init__(self) -> None:
         # Python module type => List[ConcreteModuleType)]
         self.type_store = {}
         # ConcreteTypes that have had their methods already compiled
         self.methods_compiled = set()
 
     def get_or_create_concrete_type(self, nn_module):
-        """
-        Infer a ConcreteType from this `nn.Module` instance. Underlying JIT
-        types are re-used if possible.
-        """
+        """Infer a ConcreteType from this `nn.Module` instance. Underlying JIT types are re-used if possible."""
         concrete_type_builder = infer_concrete_type_builder(nn_module)
 
         nn_module_type = type(nn_module)
@@ -483,9 +479,10 @@ def create_hooks_from_stubs(concrete_type, hook_stubs, pre_hook_stubs):
 
 def get_module_concrete_type(nn_module, share_types=True):
     """
-    Gets a concrete type for nn_modules. If share_types is True, the concrete
-    type is fetched from concrete_type_store. If it is False, a new concrete type
-    is created without first searching concrete_type_store.
+    Get a concrete type for nn_modules.
+
+    If share_types is True, the concrete type is fetched from concrete_type_store.
+    If it is False, a new concrete type is created without first searching concrete_type_store.
 
     Args:
         nn_module:  The original Python nn.Module that we are creating a ScriptModule for.
@@ -537,7 +534,7 @@ def create_script_class(obj):
 
 def create_script_module(nn_module, stubs_fn, share_types=True, is_tracing=False):
     """
-    Creates a new ScriptModule from an nn.Module
+    Create a new ScriptModule from an nn.Module.
 
     Args:
         nn_module:  The original Python nn.Module that we are creating a ScriptModule for.
@@ -572,10 +569,6 @@ def create_script_module_impl(nn_module, concrete_type, stubs_fn):
     method_stubs = stubs_fn(nn_module)
     property_stubs = get_property_stubs(nn_module)
     hook_stubs, pre_hook_stubs = get_hook_stubs(nn_module)
-
-    user_annotated_ignored_attributes = getattr(
-        nn_module, "__jit_ignored_attributes__", list()
-    )
     ignored_properties = jit_ignored_properties(nn_module)
 
     def init_fn(script_module):
@@ -772,7 +765,7 @@ def get_overload_annotations(mod, jit_ignored_properties):
 def get_overload_name_mapping(overload_info):
     # Same format as __overloads__
     # original function => [overload names]
-    overload_name_mappings: Dict[str, List[str]] = {}
+    overload_name_mappings: dict[str, list[str]] = {}
     for orig_fn, overloads in overload_info.items():
         original_name = orig_fn.__name__
         if original_name not in overload_name_mappings:
@@ -825,31 +818,24 @@ def check_module_initialized(mod):
         for name, param in mod._parameters.items():
             if param is not None and torch.nn.parameter.is_lazy(param):
                 raise RuntimeError(
-                    "'{}' has uninitialized parameters {}. Did you forget to run a forward pass?".format(
-                        torch.typename(type(mod)), name
-                    )
+                    f"'{torch.typename(type(mod))}' has uninitialized parameters {name}. Did you forget to run a forward pass?"
                 )
         for name, buf in mod._buffers.items():
             if buf is not None and torch.nn.parameter.is_lazy(buf):
                 raise RuntimeError(
-                    "'{}' has uninitialized buffers {}. Did you forget to run a forward pass?".format(
-                        torch.typename(type(mod)), name
-                    )
+                    f"'{torch.typename(type(mod))}' has uninitialized buffers {name}. Did you forget to run a forward pass?"
                 )
 
 
 def infer_methods_to_compile(nn_module):
-    """
-    Implements the default rules for which methods should act as starting
-    points for compilation (TODO add a link when the rules are published).
+    """Implement the default rules for which methods should act as starting points for compilation.
+
+    (TODO add a link when the rules are published).
     """
     check_module_initialized(nn_module)
-    user_annotated_ignored_attributes = getattr(
-        nn_module, "__jit_ignored_attributes__", list()
-    )
     ignored_properties = jit_ignored_properties(nn_module)
 
-    methods: List[str] = []
+    methods: list[str] = []
     if hasattr(nn_module, "forward") and not _jit_internal.is_ignored_fn(
         nn_module.forward
     ):
@@ -886,7 +872,7 @@ def infer_methods_to_compile(nn_module):
 
     # Unique the methods. We don't want to use a set to store the methods because it
     # introduces non-determinism to compile order.
-    uniquer: Set[str] = set()
+    uniquer: set[str] = set()
     uniqued_methods = []
     for name in filtered_methods:
         if name in uniquer:
@@ -894,18 +880,14 @@ def infer_methods_to_compile(nn_module):
         uniqued_methods.append(name)
         uniquer.add(name)
 
-    stubs = []
-    for method in uniqued_methods:
-        stubs.append(make_stub_from_method(nn_module, method))
+    stubs = [make_stub_from_method(nn_module, method) for method in uniqued_methods]
     return overload_stubs + stubs
 
 
 def get_hook_stubs(nn_module):
-    """
-    Returns forward hook and pre_hook ScriptModuleStubs
-    """
+    """Return forward hook and pre_hook ScriptModuleStubs."""
     check_module_initialized(nn_module)
-    hook_map: Dict = {}
+    hook_map: dict = {}
 
     hook_stubs = []
     for hook in nn_module._forward_hooks.values():
@@ -937,10 +919,7 @@ def get_hook_stubs(nn_module):
 
 
 def get_property_stubs(nn_module):
-    """
-    Create property stubs for the properties of the module by creating method
-    stubs for the getter and setter.
-    """
+    """Create property stubs for the properties of the module by creating method stubs for the getter and setter."""
     module_ty = type(nn_module)
     properties_asts = get_class_properties(module_ty, self_name="RecursiveScriptModule")
     rcbs = {}
@@ -961,8 +940,7 @@ def get_property_stubs(nn_module):
 
 def interface_script(mod_interface, nn_module):
     """
-    Makes a ScriptModule from an nn.Module, using the interface methods rule for
-    determining which methods to compile.
+    Make a ScriptModule from an nn.Module, using the interface methods rule for determining which methods to compile.
 
     Args:
         mod_interface: the interface type that the module have
@@ -974,13 +952,14 @@ def interface_script(mod_interface, nn_module):
     check_module_initialized(nn_module)
 
     def infer_interface_methods_to_compile(nn_module):
+        """Rule to infer the methods from the interface type.
+
+        It is used to know which methods need to act as starting points for compilation.
         """
-        Rule to infer the methods from the interface type to know which
-        methods need to act as starting points for compilation.
-        """
-        stubs = []
-        for method in mod_interface.getMethodNames():
-            stubs.append(make_stub_from_method(nn_module, method))
+        stubs = [
+            make_stub_from_method(nn_module, method)
+            for method in mod_interface.getMethodNames()
+        ]
         return stubs
 
     return create_script_module(nn_module, infer_interface_methods_to_compile)
@@ -1003,6 +982,10 @@ def try_compile_fn(fn, loc):
             f"Consider manually annotating `{fn}` with @torch.jit.script."
         )
 
+    # The object returned by __prepare_scriptable__ might have a different closure.
+    # Resolve it here to get the right resolution callback.
+    fn = fn.__prepare_scriptable__() if hasattr(fn, "__prepare_scriptable__") else fn  # type: ignore[operator]
+
     # We don't have the actual scope where the function was defined, but we can
     # extract the necessary info from the closed over variables on the function
     # object
@@ -1011,16 +994,12 @@ def try_compile_fn(fn, loc):
 
 
 def wrap_cpp_class(cpp_class):
-    """
-    Wrap this torch._C.Object in a Python RecursiveScriptClass.
-    """
+    """Wrap this torch._C.Object in a Python RecursiveScriptClass."""
     return torch.jit.RecursiveScriptClass(cpp_class)
 
 
 def wrap_cpp_module(cpp_module):
-    """
-    Wrap this torch._C.ScriptModule in a Python ScriptModule, recursively for all submodules
-    """
+    """Wrap this torch._C.ScriptModule in a Python ScriptModule, recursively for all submodules."""
 
     def init_fn(script_module):
         for name, cpp_module in torch._C.ModuleDict(script_module._c).items():
@@ -1050,10 +1029,10 @@ def compile_unbound_method(concrete_type, fn):
 
 def lazy_bind(concrete_type, unbound_method):
     """
-    Returns a function that lazily binds `unbound_method` to a provided
-    Module IValue, then invokes the method. We do this so that any Python
-    shenanigans that will poison type sharing are impossible at compile
-    time.
+    Return a function that lazily binds `unbound_method` to a provided Module IValue, then invokes the method.
+
+    We do this so that any Python shenanigans that
+    will poison type sharing are impossible at compile time.
     """
 
     def lazy_binding_method(cpp_module, *args):

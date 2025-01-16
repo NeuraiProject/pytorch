@@ -13,7 +13,6 @@ from common import (
     features_to_dict,
     frontend_categories,
     get_commit_data_cache,
-    get_features,
     run,
     topics,
 )
@@ -215,8 +214,6 @@ class CommitList:
             return "caffe2", topic
         if "Reverted" in labels:
             return "skip", topic
-        if "bc_breaking" in labels:
-            topic = "bc-breaking"
         if "module: deprecation" in labels:
             topic = "deprecation"
 
@@ -499,6 +496,9 @@ The main goal of this process is to rephrase all the commit messages below to ma
 * Please sort commits into the following categories (you should not rename the categories!), I tried to pre-sort these to ease your work, feel free to move commits around if the current categorization is not good.
 * Please drop any commits that are not user-facing.
 * If anything is from another domain, leave it in the UNTOPICED section at the end and I'll come and take care of it.
+* Please use markdown format
+* Please use #PR_NUM to link to the PR, instead of `[#PR_NUM](https://github.com/pytorch/pytorch/pull/#PR_NUM)` to reduce the length of the release notes
+* We place a lot of emphasis on the “BC-breaking” and “deprecation” sections. Those should be where the most effort goes in. The “improvements” and “bug fixes” for Python API should be nice as well. Everything else doesn’t matter too much so feel free to cut corners if time is short.
 
 The categories below are as follows:
 
@@ -512,9 +512,7 @@ The categories below are as follows:
 * Developers: All commits that are not end-user facing but still impact people that compile from source, develop into pytorch, extend pytorch, etc
 """
 
-    return [
-        header,
-    ]
+    return [header]
 
 
 def main():
@@ -577,7 +575,7 @@ def main():
             with open(filename, "w") as f:
                 f.writelines(lines)
         return
-    raise AssertionError()
+    raise AssertionError
 
 
 if __name__ == "__main__":

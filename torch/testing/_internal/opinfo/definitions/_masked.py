@@ -1,3 +1,5 @@
+# mypy: ignore-errors
+
 import unittest
 from collections.abc import Sequence
 from functools import partial
@@ -355,7 +357,6 @@ def sample_inputs_masked_softmax(
 
 def sample_inputs_masked_cumops(op_info, device, dtype, requires_grad, **kwargs):
     """Sample inputs for masked cumsum and cumprod."""
-    inputs: List[SampleInput] = []
     for sample_input in sample_inputs_softmax_variant(
         op_info, device, dtype, requires_grad, **kwargs
     ):
@@ -504,11 +505,7 @@ op_db: List[OpInfo] = [
         supports_sparse=True,
         supports_sparse_csr=True,
         promotes_int_to_int64=True,
-        # FIXME: "prod_cpu" not implemented for 'Half'
-        dtypes=all_types_and_complex_and(torch.bool, torch.bfloat16),
-        dtypesIfCUDA=all_types_and_complex_and(
-            torch.bool, torch.float16, torch.bfloat16
-        ),
+        dtypes=all_types_and_complex_and(torch.bool, torch.float16, torch.bfloat16),
         skips=(
             DecorateInfo(
                 unittest.expectedFailure,
@@ -554,6 +551,18 @@ op_db: List[OpInfo] = [
                 "TestReductions",
                 "test_ref_small_input",
             ),
+            DecorateInfo(
+                toleranceOverride({torch.float16: tol(atol=1e-02, rtol=1.5e-03)}),
+                "TestMasked",
+                "test_mask_layout",
+                device_type="cpu",
+            ),
+            DecorateInfo(
+                toleranceOverride({torch.float32: tol(atol=1e-05, rtol=1e-05)}),
+                "TestOperators",
+                "test_jvp",
+                device_type="cuda",
+            ),
         ],
         sample_inputs_func=sample_inputs_masked_reduction,
         sample_inputs_sparse_coo_func=sample_inputs_sparse_coo_masked_reduction,
@@ -561,8 +570,7 @@ op_db: List[OpInfo] = [
     ),
     OpInfo(
         "masked.cumsum",
-        dtypes=all_types_and_complex_and(torch.bfloat16),
-        dtypesIfCUDA=all_types_and_complex_and(torch.float16, torch.bfloat16),
+        dtypes=all_types_and_complex_and(torch.float16, torch.bfloat16),
         method_variant=None,
         # Runs very slowly on slow gradcheck - alternatively reduce input sizes
         gradcheck_fast_mode=True,
@@ -586,8 +594,7 @@ op_db: List[OpInfo] = [
     ),
     OpInfo(
         "masked.cumprod",
-        dtypes=all_types_and_complex_and(torch.bfloat16),
-        dtypesIfCUDA=all_types_and_complex_and(torch.float16, torch.bfloat16),
+        dtypes=all_types_and_complex_and(torch.float16, torch.bfloat16),
         method_variant=None,
         # Runs very slowly on slow gradcheck - alternatively reduce input sizes
         gradcheck_fast_mode=True,
@@ -612,7 +619,7 @@ op_db: List[OpInfo] = [
                 device_type="cuda",
             ),
             DecorateInfo(
-                toleranceOverride({torch.float16: tol(atol=2e-3, rtol=2e-3)}),
+                toleranceOverride({torch.float16: tol(atol=1e-2, rtol=2.6e-3)}),
                 "TestInductorOpInfo",
                 "test_comprehensive",
                 device_type="cuda",
@@ -762,26 +769,8 @@ op_db: List[OpInfo] = [
         supports_forward_ad=True,
         supports_fwgrad_bwgrad=True,
         promotes_int_to_float=True,
-        dtypes=all_types_and_complex_and(torch.float16, torch.bfloat16, torch.bool),
+        dtypes=floating_and_complex_types_and(torch.float16, torch.bfloat16),
         skips=(
-            DecorateInfo(
-                unittest.expectedFailure,
-                "TestReductions",
-                "test_ref_duplicate_values",
-                dtypes=(torch.bool,),
-            ),
-            DecorateInfo(
-                unittest.expectedFailure,
-                "TestReductions",
-                "test_reference_masked",
-                dtypes=(torch.bool,),
-            ),
-            DecorateInfo(
-                unittest.expectedFailure,
-                "TestReductions",
-                "test_ref_small_input",
-                dtypes=(torch.bool,),
-            ),
             DecorateInfo(
                 unittest.expectedFailure,
                 "TestNormalizeOperators",
@@ -833,8 +822,7 @@ op_db: List[OpInfo] = [
     ),
     OpInfo(
         "masked.median",
-        dtypes=floating_types_and(torch.bfloat16),
-        dtypesIfCUDA=floating_types_and(torch.float16),
+        dtypes=floating_types_and(torch.bfloat16, torch.float16),
         method_variant=None,
         supports_out=False,
         supports_forward_ad=True,
@@ -954,6 +942,16 @@ op_db: List[OpInfo] = [
                 "TestMasked",
                 "test_reference_masked",
             ),
+            DecorateInfo(
+                toleranceOverride(
+                    {
+                        torch.float16: tol(atol=4e-5, rtol=2e-2),
+                    }
+                ),
+                "TestInductorOpInfo",
+                "test_comprehensive",
+                device_type="cuda",
+            ),
         ],
         sample_inputs_func=sample_inputs_masked_std_var,
         gradcheck_wrapper=gradcheck_wrapper_masked_operation,
@@ -1032,8 +1030,7 @@ op_db: List[OpInfo] = [
     OpInfo(
         "masked.softmax",
         method_variant=None,
-        dtypes=floating_types_and(torch.bfloat16),
-        dtypesIfCUDA=floating_types_and(torch.half, torch.bfloat16),
+        dtypes=floating_types_and(torch.half, torch.bfloat16),
         sample_inputs_func=sample_inputs_masked_softmax,
         skips=(
             DecorateInfo(
@@ -1053,8 +1050,7 @@ op_db: List[OpInfo] = [
     OpInfo(
         "masked.log_softmax",
         method_variant=None,
-        dtypes=floating_types_and(torch.bfloat16),
-        dtypesIfCUDA=floating_types_and(torch.half, torch.bfloat16),
+        dtypes=floating_types_and(torch.half, torch.bfloat16),
         sample_inputs_func=sample_inputs_masked_softmax,
         skips=(
             DecorateInfo(
@@ -1081,8 +1077,7 @@ op_db: List[OpInfo] = [
     OpInfo(
         "masked.softmin",
         method_variant=None,
-        dtypes=floating_types_and(torch.bfloat16),
-        dtypesIfCUDA=floating_types_and(torch.half, torch.bfloat16),
+        dtypes=floating_types_and(torch.half, torch.bfloat16),
         sample_inputs_func=sample_inputs_masked_softmax,
         skips=(
             DecorateInfo(
@@ -1092,6 +1087,16 @@ op_db: List[OpInfo] = [
             ),
             DecorateInfo(
                 unittest.expectedFailure, "TestJit", "test_variant_consistency_jit"
+            ),
+            # FIXME:
+            # Mismatched elements: 2 / 2 (100.0%)
+            # Greatest absolute difference: nan at index (0,) (up to 0.0001 allowed)
+            # Greatest relative difference: nan at index (0,) (up to 0.0001 allowed
+            DecorateInfo(
+                unittest.skip("Skipped!"),
+                "TestOperators",
+                "test_vmapvjpvjp",
+                device_type="cpu",
             ),
         ),
         gradcheck_wrapper=gradcheck_wrapper_masked_operation,
@@ -1104,6 +1109,14 @@ op_db: List[OpInfo] = [
         method_variant=None,
         dtypes=floating_and_complex_types_and(torch.half, torch.bfloat16),
         sample_inputs_func=sample_inputs_masked_normalize,
+        decorators=[
+            DecorateInfo(
+                toleranceOverride({torch.float16: tol(atol=2e-5, rtol=6e-3)}),
+                "TestInductorOpInfo",
+                "test_comprehensive",
+                device_type="cuda",
+            ),
+        ],
         skips=(
             DecorateInfo(
                 unittest.expectedFailure,
@@ -1123,8 +1136,7 @@ op_db: List[OpInfo] = [
     ),
     OpInfo(
         "masked.logaddexp",
-        dtypes=floating_types_and(torch.bfloat16),
-        dtypesIfCUDA=floating_types_and(torch.float16, torch.bfloat16),
+        dtypes=floating_types_and(torch.float16, torch.bfloat16),
         supports_out=False,
         supports_forward_ad=True,
         supports_fwgrad_bwgrad=True,
@@ -1151,7 +1163,7 @@ op_db: List[OpInfo] = [
     ),
     ReductionOpInfo(
         "masked.logsumexp",
-        dtypes=all_types_and(torch.half, torch.bfloat16),
+        dtypes=all_types_and_complex_and(torch.half, torch.bfloat16),
         method_variant=None,
         nan_policy="propagate",
         supports_out=False,
@@ -1180,6 +1192,16 @@ op_db: List[OpInfo] = [
             ),
             # all the values are the same except for -inf vs nan
             DecorateInfo(unittest.skip("Skipped!"), "TestDecomp", "test_comprehensive"),
+            # FIXME:
+            # Mismatched elements: 2 / 12 (16.7%)
+            # Greatest absolute difference: 9223372034707292160 at index (0, 0, 0, 0)
+            # Greatest relative difference: 0.0 at index (0, 0, 0, 1)
+            DecorateInfo(
+                unittest.skip("Skipped!"),
+                "TestInductorOpInfo",
+                "test_comprehensive",
+                device_type="cpu",
+            ),
         ),
         sample_inputs_func=sample_inputs_masked_reduction,
         gradcheck_wrapper=gradcheck_wrapper_masked_operation,

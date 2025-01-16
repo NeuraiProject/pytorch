@@ -6,16 +6,18 @@
 
 #include <ATen/ATen.h>
 
-#include <algorithm>
-#include <cstdint>
 #include <memory>
-#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
-namespace torch {
-namespace autograd {
+#ifndef AT_PER_OPERATOR_HEADERS
+#include <ATen/Functions.h>
+#else
+#include <ATen/ops/zeros.h>
+#endif
+
+namespace torch::autograd {
 
 // The current evaluating node. This is useful to assign the current node as a
 // parent of new nodes created during the evaluation of this node in anomaly
@@ -103,5 +105,8 @@ void deleteNode(Node* function) {
   }
 }
 
-} // namespace autograd
-} // namespace torch
+at::Tensor TypeAndSize::zeros() {
+  return at::zeros_symint(sym_sizes, options);
+}
+
+} // namespace torch::autograd

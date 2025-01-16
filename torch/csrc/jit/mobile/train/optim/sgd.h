@@ -1,17 +1,12 @@
 #pragma once
 
 #include <torch/arg.h>
-#include <torch/nn/module.h>
-#include <torch/serialize/archive.h>
 #include <torch/types.h>
 
-#include <cstddef>
 #include <utility>
 #include <vector>
 
-namespace torch {
-namespace jit {
-namespace mobile {
+namespace torch::jit::mobile {
 
 class SGDParamState {
   TORCH_ARG(torch::Tensor, momentum_buffer);
@@ -22,7 +17,6 @@ class SGDParamState {
         static_cast<const SGDParamState&>(*this));
   }
   friend bool operator==(const SGDParamState& lhs, const SGDParamState& rhs);
-  ~SGDParamState() = default;
 };
 
 struct TORCH_API SGDOptions {
@@ -40,7 +34,6 @@ struct TORCH_API SGDOptions {
   TORCH_API friend bool operator==(
       const SGDOptions& lhs,
       const SGDOptions& rhs);
-  ~SGDOptions() = default;
 };
 
 /// Stores parameters in the param_group and stores a pointer to the SGDOptions
@@ -129,6 +122,4 @@ class TORCH_API SGD {
   // NOLINTNEXTLINE(cppcoreguidelines-non-private-member-variables-in-classes)
   std::unique_ptr<SGDOptions> options_;
 };
-} // namespace mobile
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit::mobile

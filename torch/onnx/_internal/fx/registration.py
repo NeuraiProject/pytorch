@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import dataclasses
-from typing import Optional, TYPE_CHECKING, Union
+from typing import TYPE_CHECKING
 
-import torch._ops
-from torch.onnx._internal import _beartype
 
 # We can only import onnx from this module in a type-checking context to ensure that
 # 'import torch.onnx' continues to work without having 'onnx' installed. We fully
 # 'import onnx' inside of dynamo_export (by way of _assert_dependencies).
 if TYPE_CHECKING:
+    import types
+
     import onnxscript  # type: ignore[import]
+
+    import torch._ops
 
 
 @dataclasses.dataclass(frozen=True, eq=True)
@@ -26,7 +28,7 @@ class ONNXFunction:
 
     """
 
-    onnx_function: Union["onnxscript.OnnxFunction", "onnxscript.TracedOnnxFunction"]
+    onnx_function: onnxscript.OnnxFunction | onnxscript.TracedOnnxFunction
     op_full_name: str
     is_custom: bool = False
     is_complex: bool = False
@@ -41,21 +43,16 @@ class OpName:
     overload: str
 
     @classmethod
-    @_beartype.beartype
     def from_name_parts(
-        cls, namespace: str, op_name: str, overload: Optional[str] = None
+        cls, namespace: str, op_name: str, overload: str | None = None
     ) -> OpName:
         # NOTE: in PyTorch, the overload could be unprovided to indicate the
         # default overload
-        # TODO: This is slightly unsafe that dev could accidentally create illegal
-        # OpName by using initializer directly
-        # https://github.com/pytorch/pytorch/pull/103943#discussion_r1256511069
         if overload is None or overload == "":
             overload = "default"
         return cls(namespace, op_name, overload)
 
     @classmethod
-    @_beartype.beartype
     def from_qualified_name(cls, qualified_name: str) -> OpName:
         """When the name is <namespace>::<op_name>[.<overload>]"""
         namespace, opname_overload = qualified_name.split("::")
@@ -64,10 +61,27 @@ class OpName:
         return cls(namespace, op_name, overload)
 
     @classmethod
-    @_beartype.beartype
     def from_op_overload(cls, op_overload: torch._ops.OpOverload) -> OpName:
         return cls.from_qualified_name(op_overload.name())
 
-    @_beartype.beartype
+    @classmethod
+    def from_builtin_function(
+        cls, builtin_function: types.BuiltinFunctionType
+    ) -> OpName:
+        """From a builtin function, e.g. operator.add, math.ceil, etc, get the OpName.
+
+        FX graph uses built-in functions to caculate sympy expression. This function
+        is used to get the OpName from a builtin function.
+
+        Args:
+            builtin_function (types.BuiltinFunctionType): operator.add, math.ceil, etc.
+
+        Returns:
+            OpName: _description_
+        """
+        op = builtin_function.__name__  # add, sub, etc.
+        module = builtin_function.__module__  # _operators or math
+        return cls.from_qualified_name(module + "::" + op)
+
     def qualified_name(self) -> str:
         return f"{self.namespace}::{self.op_name}.{self.overload}"

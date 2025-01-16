@@ -71,6 +71,7 @@ derivative would be as follows::
     loss.backward()
 """
 
+from . import transforms
 from .bernoulli import Bernoulli
 from .beta import Beta
 from .binomial import Binomial
@@ -90,6 +91,7 @@ from .gumbel import Gumbel
 from .half_cauchy import HalfCauchy
 from .half_normal import HalfNormal
 from .independent import Independent
+from .inverse_gamma import InverseGamma
 from .kl import _add_kl_info, kl_divergence, register_kl
 from .kumaraswamy import Kumaraswamy
 from .laplace import Laplace
@@ -110,11 +112,11 @@ from .relaxed_categorical import RelaxedOneHotCategorical
 from .studentT import StudentT
 from .transformed_distribution import TransformedDistribution
 from .transforms import *  # noqa: F403
-from . import transforms
 from .uniform import Uniform
 from .von_mises import VonMises
 from .weibull import Weibull
 from .wishart import Wishart
+
 
 _add_kl_info()
 del _add_kl_info
@@ -138,6 +140,7 @@ __all__ = [
     "HalfCauchy",
     "HalfNormal",
     "Independent",
+    "InverseGamma",
     "Kumaraswamy",
     "LKJCholesky",
     "Laplace",

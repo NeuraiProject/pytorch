@@ -68,7 +68,7 @@ static_assert(is_function_type<int(MyClass)>::value, "");
 static_assert(is_function_type<int(const MyClass&)>::value, "");
 static_assert(is_function_type<int(MyClass&&)>::value, "");
 static_assert(is_function_type < MyClass && () > ::value, "");
-static_assert(is_function_type < MyClass && (MyClass &&) > ::value, "");
+static_assert(is_function_type < MyClass && (MyClass&&) > ::value, "");
 static_assert(is_function_type<const MyClass&(int, float, MyClass)>::value, "");
 
 static_assert(!is_function_type<void>::value, "");
@@ -156,12 +156,15 @@ void func() {
   static_assert(is_stateless_lambda<decltype(stateless_lambda)>::value, "");
 
   int b = 4;
+  // NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
   auto stateful_lambda_1 = [&](int a) { return a + b; };
   static_assert(!is_stateless_lambda<decltype(stateful_lambda_1)>::value, "");
 
+  // NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
   auto stateful_lambda_2 = [=](int a) { return a + b; };
   static_assert(!is_stateless_lambda<decltype(stateful_lambda_2)>::value, "");
 
+  // NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
   auto stateful_lambda_3 = [b](int a) { return a + b; };
   static_assert(!is_stateless_lambda<decltype(stateful_lambda_3)>::value, "");
 

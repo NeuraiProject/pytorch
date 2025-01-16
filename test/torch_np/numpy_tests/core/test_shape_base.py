@@ -1,32 +1,60 @@
 # Owner(s): ["module: dynamo"]
 
 import functools
-
 from unittest import expectedFailure as xfail, skipIf as skipif
 
+import numpy
 import pytest
-
-import torch._numpy as np
 from pytest import raises as assert_raises
-from torch._numpy import (
-    array,
-    atleast_1d,
-    atleast_2d,
-    atleast_3d,
-    AxisError,
-    concatenate,
-    hstack,
-    newaxis,
-    stack,
-    vstack,
-)
-from torch._numpy.testing import assert_, assert_array_equal, assert_equal
+
 from torch.testing._internal.common_utils import (
     instantiate_parametrized_tests,
     parametrize,
     run_tests,
+    TEST_WITH_TORCHDYNAMO,
     TestCase,
+    xpassIfTorchDynamo_np,
 )
+
+
+# If we are going to trace through these, we should use NumPy
+# If testing on eager mode, we use torch._numpy
+if TEST_WITH_TORCHDYNAMO:
+    import numpy as np
+    from numpy import (
+        array,
+        atleast_1d,
+        atleast_2d,
+        atleast_3d,
+        concatenate,
+        hstack,
+        newaxis,
+        stack,
+        vstack,
+    )
+
+    if int(numpy.__version__[0]) >= 2:
+        from numpy.exceptions import AxisError
+    else:
+        from numpy import AxisError
+
+    from numpy.testing import assert_, assert_array_equal, assert_equal
+else:
+    import torch._numpy as np
+    from torch._numpy import (
+        array,
+        atleast_1d,
+        atleast_2d,
+        atleast_3d,
+        AxisError,
+        concatenate,
+        hstack,
+        newaxis,
+        stack,
+        vstack,
+    )
+    from torch._numpy.testing import assert_, assert_array_equal, assert_equal
+
 
 skip = functools.partial(skipif, True)
 
@@ -174,14 +202,15 @@ class TestHstack(TestCase):
     def test_generator(self):
         # numpy 1.24 emits warnings but we don't
         # with assert_warns(FutureWarning):
-        hstack(np.arange(3) for _ in range(2))
+        hstack([np.arange(3) for _ in range(2)])
         # with assert_warns(FutureWarning):
-        hstack(x for x in np.ones((3, 2)))
+        hstack([x for x in np.ones((3, 2))])  # noqa: C416
 
+    @skipif(numpy.__version__ < "1.24", reason="NP_VER: fails on NumPy 1.23.x")
     def test_casting_and_dtype(self):
         a = np.array([1, 2, 3])
         b = np.array([2.5, 3.5, 4.5])
-        res = np.hstack((a, b), casting="unsafe", dtype=np.int64)
+        res = np.hstack(np.append(a, b), casting="unsafe", dtype=np.int64)
         expected_res = np.array([1, 2, 3, 2, 3, 4])
         assert_array_equal(res, expected_res)
 
@@ -232,6 +261,7 @@ class TestVstack(TestCase):
         with pytest.raises(TypeError, match="arrays to stack must be"):
             vstack(np.arange(3) for _ in range(2))
 
+    @skipif(numpy.__version__ < "1.24", reason="casting kwarg is new in NumPy 1.24")
     def test_casting_and_dtype(self):
         a = np.array([1, 2, 3])
         b = np.array([2.5, 3.5, 4.5])
@@ -239,6 +269,7 @@ class TestVstack(TestCase):
         expected_res = np.array([[1, 2, 3], [2, 3, 4]])
         assert_array_equal(res, expected_res)
 
+    @skipif(numpy.__version__ < "1.24", reason="casting kwarg is new in NumPy 1.24")
     def test_casting_and_dtype_type_error(self):
         a = np.array([1, 2, 3])
         b = np.array([2.5, 3.5, 4.5])
@@ -291,7 +322,7 @@ class TestConcatenate(TestCase):
         a = np.ones((1, 2, 3))
         b = np.ones((2, 2, 3))
         axis = list(range(3))
-        for i in range(3):
+        for _ in range(3):
             np.concatenate((a, b), axis=axis[0])  # OK
             #            assert_raises_regex(
             assert_raises(
@@ -332,7 +363,7 @@ class TestConcatenate(TestCase):
         assert out is rout
         assert np.all(r == rout)
 
-    @xfail  # (reason="concatenate(x, axis=None) relies on x being a sequence")
+    @xpassIfTorchDynamo_np  # (reason="concatenate(x, axis=None) relies on x being a sequence")
     def test_large_concatenate_axis_None(self):
         # When no axis is given, concatenate uses flattened versions.
         # This also had a bug with many arrays (see gh-5979).
@@ -396,7 +427,6 @@ class TestConcatenate(TestCase):
         a = array([1, 2])
         b = array([3, 4])
         n = [1, 2]
-        res = array([1, 2, 3, 4])
         assert_raises(TypeError, operator.concat, a, b)
         assert_raises(TypeError, operator.concat, a, n)
         assert_raises(TypeError, operator.concat, n, a)
@@ -442,6 +472,7 @@ class TestConcatenate(TestCase):
 
 @instantiate_parametrized_tests
 class TestStackMisc(TestCase):
+    @skipif(numpy.__version__ < "1.24", reason="NP_VER: fails on NumPy 1.23.x")
     def test_stack(self):
         # non-iterable input
         assert_raises(TypeError, stack, 1)
@@ -523,6 +554,7 @@ class TestStackMisc(TestCase):
         with assert_raises(TypeError):
             stack((a, b), dtype=np.int64, axis=1, casting="safe")
 
+    @skipif(numpy.__version__ < "1.24", reason="NP_VER: fails on NumPy 1.23.x")
     @parametrize("axis", [0])
     @parametrize("out_dtype", ["c8", "f4", "f8", "i8"])  # torch does not have ">f8",
     @parametrize("casting", ["no", "equiv", "safe", "same_kind", "unsafe"])

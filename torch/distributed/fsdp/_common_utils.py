@@ -1,7 +1,7 @@
+# mypy: allow-untyped-defs
 """
 This file includes private common utilities for FSDP.
 """
-
 import logging
 import traceback
 import warnings
@@ -19,8 +19,8 @@ from typing import (
     no_type_check,
     Optional,
     Set,
-    Tuple,
     Type,
+    TYPE_CHECKING,
 )
 
 import torch
@@ -28,7 +28,6 @@ import torch.distributed as dist
 import torch.distributed.fsdp._flat_param as flat_param_file
 import torch.nn as nn
 from torch.distributed._composable_state import _get_module_state, _State
-from torch.distributed._tensor.device_mesh import DeviceMesh
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     _CHECKPOINT_PREFIX,
 )
@@ -43,6 +42,13 @@ from .api import (
     StateDictConfig,
     StateDictType,
 )
+
+
+if TYPE_CHECKING:
+    from torch.distributed.device_mesh import DeviceMesh
+    from torch.distributed.fsdp._fsdp_extensions import FSDPExtensions
+
+    from ._flat_param import FlatParamHandle
 
 FSDP_WRAPPED_MODULE = "_fsdp_wrapped_module"
 FSDP_PREFIX = FSDP_WRAPPED_MODULE + "."
@@ -70,39 +76,41 @@ class _FSDPDeviceHandle:
             try:
                 self.__backend = getattr(torch, device.type)
                 self.__device = device
-            except AttributeError:
+            except AttributeError as exc:
                 raise AttributeError(
                     f"Device '{device}' does not have a corresponding backend registered as 'torch.{device.type}'."
-                )
+                ) from exc
         else:
             self.__backend = backend
 
     @classmethod
     def from_device(cls, device: torch.device) -> "_FSDPDeviceHandle":
         """
-        Return an device handle corresponding to the device, and through this handle,
+        Return a device handle corresponding to the device, and through this handle,
         operations with the same semantics as CUDA can be performed on the device.
         Just return torch.cuda if the device is cuda to make attribute-access faster.
         Custom backend must first register a module with the same name with {device.type} on torch.
         """
         if device.type == "cuda":
             return cast(_FSDPDeviceHandle, torch.cuda)
+        elif device.type == "mtia":
+            return cast(_FSDPDeviceHandle, torch.mtia)
         return cls(device)
 
-    def __getattr__(self, __name: str) -> Any:
+    def __getattr__(self, name: str, /) -> Any:
         try:
-            return getattr(self.__backend, __name)
-        except AttributeError:
+            return getattr(self.__backend, name)
+        except AttributeError as exc:
             raise AttributeError(
-                f"Custom backend '{self.__device.type}' not implement 'torch.{self.__device.type}.{__name}'"
-            )
+                f"Custom backend '{self.__device.type}' not implement 'torch.{self.__device.type}.{name}'"
+            ) from exc
 
 
 class _UninitializedDeviceHandle(_FSDPDeviceHandle):
-    def __init__(self):
+    def __init__(self) -> None:
         pass
 
-    def __getattribute__(self, __name: str) -> Any:
+    def __getattribute__(self, name: str, /) -> Any:
         raise RuntimeError("Trying to use an uninitialized device handle.")
 
 
@@ -135,6 +143,7 @@ class _FSDPState(_State):
         self._gradient_postdivide_factor: int = 0
         self._comm_hook: Optional[Callable] = None
         self._comm_hook_state: Optional[Any] = None
+        self._unshard_event: Optional[torch.Event] = None
         # Abstract device handle for fsdp compute device. For now,
         # the compute device must implement cuda semantics used by fsdp
         self._device_handle: _FSDPDeviceHandle = _UninitializedDeviceHandle()
@@ -142,7 +151,7 @@ class _FSDPState(_State):
         # Save these static lists to avoid the repeated tree traversals
         self._all_fsdp_states: List[_FSDPState] = []
         self._all_handles: List[flat_param_file.FlatParamHandle] = []
-        self._enable_extension: bool = False
+        self._fsdp_extension: Optional[FSDPExtensions] = None
 
 
 def _get_module_fsdp_state(module: nn.Module) -> Optional[_FSDPState]:
@@ -253,7 +262,7 @@ def _is_fsdp_flattened(tensor: torch.Tensor) -> bool:
 
 def _named_parameters_with_duplicates(
     module: nn.Module, **kwargs: Any
-) -> List[Tuple[str, nn.Parameter]]:
+) -> List[tuple[str, nn.Parameter]]:
     """
     This API is required as some modules overwrite `named_parameters()` but do not support
     `remove_duplicate`.
@@ -264,7 +273,7 @@ def _named_parameters_with_duplicates(
     kwargs["remove_duplicate"] = False
     try:
         ret = list(module.named_parameters(**kwargs))
-    except AssertionError as e:
+    except AssertionError:
         kwargs.pop("remove_duplicate")
         ret = list(module.named_parameters(**kwargs))
     return ret
@@ -355,14 +364,14 @@ def _get_param_to_fqns(
 
 @no_type_check
 def _log_post_backward_hook(
-    state: _FSDPState, handle: "FlatParamHandle", log: logging.Logger
+    state: _FSDPState, handle: "FlatParamHandle", logger: logging.Logger
 ) -> None:
     # Under TORCH_DISTRIBUTED_DEBUG=INFO, log the module names this hook fires for.
     # Below logging of module names this post-bwd hook fires for can help debug certain
     # cases where hooks don't fire, such as under certain activation checkpoint configs.
     if state._use_orig_params and handle._debug_level == dist.DebugLevel.INFO:
         param_fqns = _get_handle_fqns_from_root(state, handle)
-        log.warning("FSDP firing post-backward hooks for parameters %s", param_fqns)
+        logger.warning("FSDP firing post-backward hooks for parameters %s", param_fqns)
 
 
 @no_type_check
@@ -416,29 +425,14 @@ def _apply_to_modules(
                     # ``named_children`` + `named_parameter(recurse=False)``.
                     # This hack is a must to make the traversal work.
                     # TODO: Remove this hack once DMP + FSDP is not supported.
+                    # It turns out that recursive wrapping may trigger this as
+                    # well.
                     if (
                         submodule_name == "_fsdp_wrapped_module"
                         or submodule_name == "_dmp_wrapped_module"
                     ):
-                        if (
-                            not torch.distributed._functional_collectives.is_torchdynamo_compiling()
-                        ):
-                            # TODO(voz): Don't graph break on this
-                            warnings.warn(
-                                "An unexpected prefix is detected. This case "
-                                " should only happen when using DMP with FSDP. "
-                                f"prefix = {prefix}, "
-                                f"submodule_name = {submodule_name}"
-                            )
                         new_prefix = prefix
                     elif submodule_name == "module":
-                        warnings.warn(
-                            "An unexpected prefix is detected. This case "
-                            " should only happen when DDP wraps the outer "
-                            " modules while FSDP wraps the inner ones."
-                            f"prefix = {prefix}, "
-                            f"submodule_name = {submodule_name}"
-                        )
                         new_prefix = prefix
             f(submodule, new_prefix, new_tree_level, *args, **kwargs)
 
@@ -540,15 +534,17 @@ def _override_module_mixed_precision(
 
 
 def _no_dispatch_record_stream(tensor: torch.Tensor, stream: torch.Stream) -> None:
-    # FIXME record_stream doesn't work with non-cuda tensors
-    if tensor.device.type not in ["cuda", torch._C._get_privateuse1_backend_name()]:
+    # FIXME record_stream doesn't work with non-cuda/mtia/xpu tensors
+    if tensor.device.type not in [
+        "cuda",
+        "mtia",
+        "xpu",
+        torch._C._get_privateuse1_backend_name(),
+    ]:
         return
 
-    if not torch.distributed._functional_collectives.is_torchdynamo_compiling():
-        # Don't no dispatch under torch compile like this
-        with no_dispatch():
-            tensor.record_stream(stream)
-    else:
+    if torch.distributed._functional_collectives.is_torchdynamo_compiling():
+        return
         # from @ezyang:
         # The no_dispatch was added in https://github.com/pytorch/pytorch/pull/88014 cc @fegin
         # Looking over the PR, it looks like this is because we don't actually support Stream arguments
@@ -557,7 +553,6 @@ def _no_dispatch_record_stream(tensor: torch.Tensor, stream: torch.Stream) -> No
         # a better version of this would just be to check if there are any modes before disabling dispatch.
         # TODO(voz): Extend a dynamo util to answer the above, unify the codepaths here.
         tensor.record_stream(stream)
-
-
-def _same_storage_as_data_ptr(x: torch.Tensor, data_ptr: int) -> bool:
-    return x._typed_storage()._data_ptr() == data_ptr
+    else:
+        with no_dispatch():
+            tensor.record_stream(stream)

@@ -22,7 +22,7 @@ written in Python and it marks the transition of PyTorch from C++ to Python.
 * **TorchInductor** is the default ``torch.compile`` deep learning compiler
   that generates fast code for multiple accelerators and backends. You
   need to use a backend compiler to make speedups through ``torch.compile``
-  possible. For NVIDIA and AMD GPUs, it leverages OpenAI Triton as the key
+  possible. For NVIDIA, AMD and Intel GPUs, it leverages OpenAI Triton as the key
   building block.
 
 * **AOT Autograd** captures not only the user-level code, but also backpropagation,
@@ -68,11 +68,13 @@ Some of the most commonly used backends include:
    * - Backend
      - Description
    * - ``torch.compile(m, backend="tensorrt")``
-     - Uses ONNX Runtime to run TensorRT for inference optimizations. `Read more <https://github.com/onnx/onnx-tensorrt>`__
+     - Uses Torch-TensorRT for inference optimizations. Requires ``import torch_tensorrt`` in the calling script to register backend. `Read more <https://github.com/pytorch/TensorRT>`__
    * - ``torch.compile(m, backend="ipex")``
      - Uses IPEX for inference on CPU. `Read more <https://github.com/intel/intel-extension-for-pytorch>`__
    * - ``torch.compile(m, backend="tvm")``
      - Uses Apache TVM for inference optimizations. `Read more <https://tvm.apache.org/>`__
+   * - ``torch.compile(m, backend="openvino")``
+     - Uses OpenVINO for inference optimizations. `Read more <https://docs.openvino.ai/torchcompile>`__
 
 Read More
 ~~~~~~~~~
@@ -83,12 +85,14 @@ Read More
 
    torch.compiler_get_started
    torch.compiler_api
-   torch.compiler_performance_dashboard
+   torch.compiler.config
    torch.compiler_fine_grain_apis
+   torch.compiler_aot_inductor
    torch.compiler_inductor_profiling
    torch.compiler_profiling_torch_compile
    torch.compiler_faq
    torch.compiler_troubleshooting
+   torch.compiler_performance_dashboard
 
 ..
   _If you want to contribute a developer-level topic
@@ -99,8 +103,8 @@ Read More
    :caption: Deep Dive for PyTorch Developers
    :maxdepth: 1
 
-   torch.compiler_deepdive
-   torch.compiler_guards_overview
+   torch.compiler_dynamo_overview
+   torch.compiler_dynamo_deepdive
    torch.compiler_dynamic_shapes
    torch.compiler_nn_module
    torch.compiler_best_practices_for_backends

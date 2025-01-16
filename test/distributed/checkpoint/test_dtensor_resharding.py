@@ -63,7 +63,7 @@ class TestDTensorReshardPlacementChange(DTensorTestBase):
             )
             state_dict_to_save = {"dtensor": dtensor}
 
-            dist_cp.save_state_dict(
+            dist_cp.save(
                 state_dict=state_dict_to_save,
                 storage_writer=dist_cp.FileSystemWriter(path=CHECKPOINT_DIR),
                 planner=dist_cp.DefaultSavePlanner(),
@@ -74,7 +74,7 @@ class TestDTensorReshardPlacementChange(DTensorTestBase):
             )
             state_dict_to_load = {"dtensor": zero_dtensor}
 
-            dist_cp.load_state_dict(
+            dist_cp.load(
                 state_dict=state_dict_to_load,
                 storage_reader=dist_cp.FileSystemReader(CHECKPOINT_DIR),
                 planner=dist_cp.DefaultLoadPlanner(),
@@ -87,7 +87,7 @@ class TestDTensorReshardPlacementChange(DTensorTestBase):
             )
             self.assertEqual(global_tensor, state_dict_to_load["dtensor"].to_local())
 
-            # redistribute the tensor back to its original placment for comparison.
+            # redistribute the tensor back to its original placement for comparison.
             state_dict_to_load["dtensor"] = state_dict_to_load["dtensor"].redistribute(
                 device_mesh,
                 placements=original_placement,
@@ -115,7 +115,7 @@ class TestDTensorReshardPlacementChange(DTensorTestBase):
             )
             state_dict_to_save = {"dtensor": dtensor}
 
-            dist_cp.save_state_dict(
+            dist_cp.save(
                 state_dict=state_dict_to_save,
                 storage_writer=dist_cp.FileSystemWriter(path=CHECKPOINT_DIR),
                 planner=dist_cp.DefaultSavePlanner(),
@@ -124,7 +124,7 @@ class TestDTensorReshardPlacementChange(DTensorTestBase):
             zero_dtensor = zeros([4, 4], device_mesh=mesh_2d, placements=new_placement)
             state_dict_to_load = {"dtensor": zero_dtensor}
 
-            dist_cp.load_state_dict(
+            dist_cp.load(
                 state_dict=state_dict_to_load,
                 storage_reader=dist_cp.FileSystemReader(CHECKPOINT_DIR),
                 planner=dist_cp.DefaultLoadPlanner(),
@@ -165,7 +165,7 @@ class TestDTensorReshardMeshChange(DTensorTestBase):
             )
             state_dict_to_save = {"dtensor": dtensor}
 
-            dist_cp.save_state_dict(
+            dist_cp.save(
                 state_dict=state_dict_to_save,
                 storage_writer=dist_cp.FileSystemWriter(path=CHECKPOINT_DIR),
                 planner=dist_cp.DefaultSavePlanner(),
@@ -180,7 +180,7 @@ class TestDTensorReshardMeshChange(DTensorTestBase):
                 )
                 state_dict_to_load = {"dtensor": zero_dtensor}
 
-                dist_cp.load_state_dict(
+                dist_cp.load(
                     state_dict=state_dict_to_load,
                     storage_reader=dist_cp.FileSystemReader(CHECKPOINT_DIR),
                     planner=dist_cp.DefaultLoadPlanner(),
@@ -211,7 +211,7 @@ class TestDTensorReshardMeshChange(DTensorTestBase):
             )
             state_dict_to_save = {"dtensor": dtensor}
 
-            dist_cp.save_state_dict(
+            dist_cp.save(
                 state_dict=state_dict_to_save,
                 storage_writer=dist_cp.FileSystemWriter(path=CHECKPOINT_DIR),
                 planner=dist_cp.DefaultSavePlanner(),
@@ -226,7 +226,7 @@ class TestDTensorReshardMeshChange(DTensorTestBase):
                 )
                 state_dict_to_load = {"dtensor": zero_dtensor}
 
-                dist_cp.load_state_dict(
+                dist_cp.load(
                     state_dict=state_dict_to_load,
                     storage_reader=dist_cp.FileSystemReader(CHECKPOINT_DIR),
                     planner=dist_cp.DefaultLoadPlanner(),
@@ -243,8 +243,37 @@ class TestDTensorReshardMeshChange(DTensorTestBase):
                     global_tensor, state_dict_to_load["dtensor"].to_local()
                 )
 
+    @with_comms
+    @with_temp_dir
+    @skip_if_lt_x_gpu(2)
+    def test_dtensor_checkpoint_resharding_with_empty_shard(self):
+        """
+        Test dtensor checkpoint resharding with dtensor containing empty shards.
+        """
+        tensor = torch.rand(1).cuda()
+        mesh = init_device_mesh(self.device_type, (self.world_size,))
+        dtensor = distribute_tensor(tensor, mesh, [Shard(0)])
+        ref_state_dict = {"dtensor": dtensor}
+
+        dist_cp.save(
+            state_dict=ref_state_dict,
+            storage_writer=dist_cp.FileSystemWriter(path=self.temp_dir),
+        )
+
+        tensor = torch.rand(1).cuda()
+        mesh_2 = init_device_mesh(self.device_type, (2, self.world_size // 2))
+        dtensor = distribute_tensor(tensor, mesh_2, [Shard(0), Shard(0)])
+        state_dict = {"dtensor": dtensor}
+        dist_cp.load(
+            state_dict=state_dict,
+            storage_reader=dist_cp.FileSystemReader(self.temp_dir),
+        )
+
+    # TODO: Add a assertEqual for ref_state_dict["dtensor"].full_tensor()
+    # and state_dict["dtensor"].full_tensor() after we fix the size mismatch
+    # issue for un-even sharding dtensor.
+
 
 # TODO: Add dtensor resharding test when world size changes.
-
 if __name__ == "__main__":
     run_tests()

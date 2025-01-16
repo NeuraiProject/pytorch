@@ -35,14 +35,12 @@ dict_int_int test_dict(dict_int_int& dict) {
 
   // erase via iterators
   auto begin = dict.begin();
-  for (const auto i : c10::irange(20)) {
-    (void)i; // Suppress unused variable warning
+  for ([[maybe_unused]] const auto i : c10::irange(20)) {
     begin++;
   }
 
   auto end = begin;
-  for (const auto i : c10::irange(20)) {
-    (void)i; // Suppress unused variable warning
+  for ([[maybe_unused]] const auto i : c10::irange(20)) {
     erase_set.insert(end->first);
     end++;
   }
@@ -136,13 +134,11 @@ TEST(OrderedPreservingDictTest, DictCollisions) {
 
     // erase a few entries via iterator
     auto begin = dict.begin();
-    for (const auto j : c10::irange(10)) {
-      (void)j; // Suppress unused variable warning
+    for ([[maybe_unused]] const auto j : c10::irange(10)) {
       begin++;
     }
     auto end = begin;
-    for (const auto j : c10::irange(7)) {
-      (void)j; // Suppress unused variable warning
+    for ([[maybe_unused]] const auto j : c10::irange(7)) {
       erase_set.insert(end->first);
       end++;
     }
@@ -444,6 +440,7 @@ TEST(OrderedPreservingDictTest, test_swap_empty) {
   swap(map, map2);
 
   TORCH_INTERNAL_ASSERT(
+      // NOLINTNEXTLINE(readability-container-size-empty)
       map ==
       (ska_ordered::
            order_preserving_flat_hash_map<std::int64_t, std::int64_t>{}));

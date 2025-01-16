@@ -1,6 +1,7 @@
-"""
-torch.multiprocessing is a wrapper around the native :mod:`multiprocessing`
-module. It registers custom reducers, that use shared memory to provide shared
+# mypy: allow-untyped-defs
+"""torch.multiprocessing is a wrapper around the native :mod:`multiprocessing` module.
+
+It registers custom reducers, that use shared memory to provide shared
 views on the same data in different processes. Once the tensor/storage is moved
 to shared_memory (see :func:`~torch.Tensor.share_memory_`), it will be possible
 to send it to other processes without making any copies.
@@ -17,7 +18,9 @@ import multiprocessing
 import sys
 
 import torch
+
 from .reductions import init_reductions
+
 
 __all__ = ["set_sharing_strategy", "get_sharing_strategy", "get_all_sharing_strategies"]
 
@@ -36,6 +39,7 @@ torch._C._multiprocessing_init()
 """Add helper function to spawn N processes and wait for completion of any of
 them. This depends `mp.get_context` which was added in Python 3.4."""
 from .spawn import (
+    ENV_VAR_PARALLEL_START,
     ProcessContext,
     ProcessExitedException,
     ProcessRaisedException,
@@ -54,7 +58,7 @@ else:
 
 
 def set_sharing_strategy(new_strategy):
-    """Sets the strategy for sharing CPU tensors.
+    """Set the strategy for sharing CPU tensors.
 
     Args:
         new_strategy (str): Name of the selected strategy. Should be one of
@@ -66,13 +70,31 @@ def set_sharing_strategy(new_strategy):
 
 
 def get_sharing_strategy():
-    """Returns the current strategy for sharing CPU tensors."""
+    """Return the current strategy for sharing CPU tensors."""
     return _sharing_strategy
 
 
 def get_all_sharing_strategies():
-    """Returns a set of sharing strategies supported on a current system."""
+    """Return a set of sharing strategies supported on a current system."""
     return _all_sharing_strategies
+
+
+def _set_thread_name(name: str) -> None:
+    """Set the name of the current thread.
+
+    Args:
+        name (str): Name of the current thread.
+    """
+    torch._C._set_thread_name(name)
+
+
+def _get_thread_name() -> str:
+    """Get the name of the current thread.
+
+    Returns:
+        str: Name of the current thread.
+    """
+    return torch._C._get_thread_name()
 
 
 init_reductions()

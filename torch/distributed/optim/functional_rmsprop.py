@@ -1,11 +1,16 @@
+# mypy: allow-untyped-defs
 from typing import Dict, List, Optional
 
 import torch
 import torch.optim._functional as F
-
 from torch import Tensor
+from torch.distributed.optim._deprecation_warning import (
+    _scripted_functional_optimizer_deprecation_warning,
+)
+
 
 __all__: List[str] = []
+
 
 # Define a TorchScript compatible Functional RMSprop Optimizer
 # where we use these optimizer in a functional way.
@@ -31,6 +36,7 @@ class _FunctionalRMSprop:
         maximize: bool = False,
         _allow_empty_param_list: bool = False,
     ):
+        _scripted_functional_optimizer_deprecation_warning(stacklevel=2)
         self.defaults = {
             "lr": lr,
             "alpha": alpha,
@@ -58,6 +64,7 @@ class _FunctionalRMSprop:
         square_avgs = []
         grad_avgs = []
         momentum_buffer_list = []
+        state_steps = []
         lr = self.defaults["lr"]
         alpha = self.defaults["alpha"]
         eps = self.defaults["eps"]
@@ -71,8 +78,10 @@ class _FunctionalRMSprop:
                 + f"Gradients length: {len(gradients)}"
             )
 
+        has_complex = False
         for param, gradient in zip(params, gradients):
             if gradient is not None:
+                has_complex |= torch.is_complex(param)
                 params_with_grad.append(param)
                 grads.append(gradient)
                 # Lazy state initialization
@@ -99,7 +108,7 @@ class _FunctionalRMSprop:
                 if self.centered:
                     grad_avgs.append(state["grad_avg"])
 
-                state["step"] += 1
+                state_steps.append(state["step"])
 
         with torch.no_grad():
             F.rmsprop(
@@ -108,6 +117,7 @@ class _FunctionalRMSprop:
                 square_avgs,
                 grad_avgs,
                 momentum_buffer_list,
+                state_steps,
                 lr=lr,
                 alpha=alpha,
                 eps=eps,
@@ -116,4 +126,5 @@ class _FunctionalRMSprop:
                 centered=self.centered,
                 foreach=self.foreach,
                 maximize=self.maximize,
+                has_complex=has_complex,
             )

@@ -4,12 +4,14 @@ import math
 import os
 from collections import Counter, defaultdict
 from functools import partial
-from typing import Any, Dict, Generator, Iterable, Tuple
+from typing import Any, Dict, Generator, Iterable
 
 import torch
 from torch.testing import make_tensor
+from torch.utils import _pytree as pytree
 from torch.utils._python_dispatch import TorchDispatchMode
-from torch.utils._pytree import tree_flatten, tree_map
+from torch.utils._pytree import tree_map
+
 
 log = logging.getLogger(__name__)
 
@@ -79,7 +81,7 @@ def serialize_sparse_tensor(e):
 
 
 def deserialize_sparse_tensor(size, dtype, layout, is_coalesced, nnz=None):
-    raise NotImplementedError()
+    raise NotImplementedError
 
 
 def deserialize_tensor(size, dtype, stride=None):
@@ -112,14 +114,14 @@ def serialize_torch_args(e):
 
 
 def contains_tensor(elems):
-    for elem in tree_flatten(elems)[0]:
+    for elem in pytree.tree_leaves(elems):
         if isinstance(elem, torch.Tensor):
             return True
     return False
 
 
 def skip_args(elems):
-    for i in tree_flatten(elems)[0]:
+    for i in pytree.tree_leaves(elems):
         # only shows up in constructors and ops like that
         if isinstance(i, (torch.memory_format, torch.storage.UntypedStorage)):
             return True
@@ -221,13 +223,11 @@ def map_to_dtype(e, dtype):
 def deserialize_args(inps):
     inps = inps.strip().strip("'")
     global_vals = {
-        **{
-            "T": deserialize_tensor,
-            "ST": deserialize_sparse_tensor,
-            "th": torch,
-            "inf": math.inf,
-            "torch": torch,
-        },
+        "T": deserialize_tensor,
+        "ST": deserialize_sparse_tensor,
+        "th": torch,
+        "inf": math.inf,
+        "torch": torch,
         **dtype_abbrs_parsing,
     }
     # f strings introduce quotations we dont want
@@ -263,7 +263,7 @@ class OperatorInputsLoader:
 
     def get_inputs_for_operator(
         self, operator, dtype=None, device="cuda"
-    ) -> Generator[Tuple[Iterable[Any], Dict[str, Any]], None, None]:
+    ) -> Generator[tuple[Iterable[Any], Dict[str, Any]], None, None]:
         assert (
             str(operator) in self.operator_db
         ), f"Could not find {operator}, must provide overload"

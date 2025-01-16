@@ -1,4 +1,5 @@
-"""Tracing
+# mypy: allow-untyped-defs
+"""Tracing.
 
 This module contains functionality to support the JIT's tracing frontend, notably:
     * torch.jit.trace
@@ -7,31 +8,31 @@ This module contains functionality to support the JIT's tracing frontend, notabl
 This is not intended to be imported directly; please use the exposed
 functionalities in `torch.jit`.
 """
-import contextlib
 
+import contextlib
 import copy
 import functools
 import inspect
 import os
 import re
 import warnings
-from typing import Any, Callable, Dict, List, Optional, Set, TypeVar
-
+from enum import Enum
+from typing import Any, Callable, Optional, TypeVar
 from typing_extensions import ParamSpec
 
 import torch
 from torch._jit_internal import (
+    _get_model_id,
     _qualified_name,
     get_callable_argument_names,
     is_scripting,
 )
 from torch.autograd import function
 from torch.jit._script import _CachedForward, script, ScriptModule
-
 from torch.jit._state import _enabled, _python_cu
 from torch.nn import Module
-
 from torch.testing._comparison import default_tolerances
+
 
 _flatten = torch._C._jit_flatten
 _unflatten = torch._C._jit_unflatten
@@ -54,7 +55,6 @@ def _create_interpreter_name_lookup_fn(frames_up=1):
             i += 1
 
         f_locals = frame.f_locals
-        f_globals = frame.f_globals
 
         for k, v in f_locals.items():
             if isinstance(v, torch.Tensor) and var is v:
@@ -70,7 +70,7 @@ def _unique_state_dict(module, keep_vars=False):
     # as values, and deduplicate the params using Parameters and Buffers
     state_dict = module.state_dict(keep_vars=True)
     filtered_dict = type(state_dict)()
-    seen_ids: Set[int] = set()
+    seen_ids: set[int] = set()
     for k, v in state_dict.items():
         if id(v) in seen_ids:
             continue
@@ -112,7 +112,7 @@ class ONNXTracedModule(torch.nn.Module):
         outs = []
 
         def wrapper(*args):
-            in_args: List[torch.Tensor] = []
+            in_args: list[torch.Tensor] = []
             for i in range(len(in_vars)):
                 if not isinstance(args[i], torch.Tensor):
                     raise RuntimeError("Expected Tensor argument")
@@ -135,7 +135,7 @@ class ONNXTracedModule(torch.nn.Module):
             else:
                 return tuple(out_vars)
 
-        graph, out = torch._C._create_graph_by_tracing(
+        graph, _out = torch._C._create_graph_by_tracing(
             wrapper,
             in_vars + module_state,
             _create_interpreter_name_lookup_fn(),
@@ -198,9 +198,10 @@ def _time(trace_name, name, time=True):
 
 def verify(model, args, loss_fn=torch.sum, devices=None):
     """
-    Verify that a JIT compiled model has the same behavior as its uncompiled
-    version along with its backwards pass.  If your model returns multiple
-    outputs, you must also specify a `loss_fn` to produce a loss for which
+    Verify that a JIT compiled model has the same behavior as its uncompiled version along with its backwards pass.
+
+    If your model returns multiple outputs,
+    you must also specify a `loss_fn` to produce a loss for which
     the backwards will be computed.
 
     This function has side-effects (e.g., it executes your model / saves and loads
@@ -239,7 +240,6 @@ def verify(model, args, loss_fn=torch.sum, devices=None):
     if not isinstance(args, tuple):
         args = (args,)
 
-    saved_args = _clone_inputs(args)
     if is_module:
         saved_state = copy.deepcopy(model.state_dict())
 
@@ -253,7 +253,7 @@ def verify(model, args, loss_fn=torch.sum, devices=None):
         if assert_compiled:
             hits = compiled_fn.hits
         out = model(*args)
-        if assert_compiled and compiled_fn.hits == hits:
+        if assert_compiled and compiled_fn.hits == hits:  # type: ignore[possibly-undefined]
             raise RuntimeError("failed to use the compiled function")
         if not isinstance(out, tuple):
             out = (out,)
@@ -279,7 +279,7 @@ def verify(model, args, loss_fn=torch.sum, devices=None):
         assert model.has_trace_for(*args)
 
     if is_module:
-        model.load_state_dict(saved_state)
+        model.load_state_dict(saved_state)  # type: ignore[possibly-undefined]
     compiled_outs, compiled_grads = run_fwd_bwd(args, assert_compiled=True)
 
     _verify_equal(uncompiled_outs, compiled_outs)
@@ -538,6 +538,20 @@ def _check_trace(
                                 atol=default_tolerances(orig, ref)[1],
                                 equal_nan=True,
                             )
+                        elif getattr(orig, "is_nested", None) or getattr(
+                            ref, "is_nested", None
+                        ):
+                            assert getattr(orig, "is_nested", None) == getattr(
+                                ref, "is_nested", None
+                            )
+                            for t_orig, t_ref in zip(orig.unbind(), ref.unbind()):
+                                torch.testing.assert_close(
+                                    t_orig.double(),
+                                    t_ref.double(),
+                                    rtol=check_tolerance,
+                                    atol=default_tolerances(t_orig, t_ref)[1],
+                                    equal_nan=True,
+                                )
                         else:
                             torch.testing.assert_close(
                                 orig.double(),
@@ -583,6 +597,7 @@ class TracerWarning(Warning):
         warnings.filterwarnings(
             "ignore", category=TracerWarning, module="torch.(?!jit)"
         )
+        warnings.filterwarnings("ignore", "torch::jit::fuser::cuda")
 
 
 # We ignore the tracer warnings coming form inside the library, because all our shape
@@ -621,7 +636,36 @@ def wrap_check_inputs(check_inputs):
     return [{"forward": c} for c in check_inputs]
 
 
-def trace(
+def analyze_ts_result_with_export_result(export, trace):
+    import torch.utils._pytree as pytree
+
+    flat_export = pytree.tree_leaves(export)
+    flat_trace = pytree.tree_leaves(trace)
+
+    for orig, loaded in zip(flat_export, flat_trace):
+        if orig.layout != loaded.layout:
+            return False
+        # mkldnn is not supported for torch.allclose
+        if orig.layout == torch._mkldnn:  # type: ignore[attr-defined]
+            return True
+        if type(orig) != type(loaded):
+            return False
+
+        if isinstance(orig, torch._subclasses.FakeTensor):
+            # Skip for FakeTensor.
+            return True
+        elif isinstance(orig, torch.Tensor):
+            if orig.dtype != loaded.dtype:
+                return False
+            if not torch.allclose(orig, loaded):
+                return False
+        else:
+            if orig != loaded:
+                return False
+    return True
+
+
+def _trace_impl(
     func,
     example_inputs=None,
     optimize=None,
@@ -635,157 +679,6 @@ def trace(
     example_kwarg_inputs=None,
     _store_inputs=True,
 ):
-    """
-    Trace a function and return an executable  or :class:`ScriptFunction`
-    that will be optimized using just-in-time compilation. Tracing is ideal for
-    code that operates only on ``Tensor``\\s and lists, dictionaries, and
-    tuples of ``Tensor``\\s.
-
-    Using `torch.jit.trace` and `torch.jit.trace_module`, you can turn an
-    existing module or Python function into a TorchScript
-    :class:`ScriptFunction` or :class:`ScriptModule`. You must provide example
-    inputs, and we run the function, recording the operations performed on all
-    the tensors.
-
-    * The resulting recording of a standalone function produces `ScriptFunction`.
-    * The resulting recording of `nn.Module.forward` or `nn.Module` produces
-      `ScriptModule`.
-
-    This module also contains any parameters that the original
-    module had as well.
-
-    Warning:
-        Tracing only correctly records functions and modules which are not data
-        dependent (e.g., do not have conditionals on data in tensors) and do not have
-        any untracked external dependencies (e.g., perform input/output or
-        access global variables). Tracing only records operations done when the given
-        function is run on the given tensors. Therefore, the returned
-        `ScriptModule` will always run the same traced graph on any input. This
-        has some important implications when your module is expected to run
-        different sets of operations, depending on the input and/or the module
-        state. For example,
-
-        * Tracing will not record any control-flow like if-statements or loops.
-          When this control-flow is constant across your module, this is fine
-          and it often inlines the control-flow decisions. But sometimes the
-          control-flow is actually part of the model itself. For instance, a
-          recurrent network is a loop over the (possibly dynamic) length of an
-          input sequence.
-        * In the returned :class:`ScriptModule`, operations that have different
-          behaviors in ``training`` and ``eval`` modes will always behave as if
-          it is in the mode it was in during tracing, no matter which mode the
-          `ScriptModule` is in.
-
-        In cases like these, tracing would not be appropriate and
-        :func:`scripting <torch.jit.script>` is a better choice. If you trace
-        such models, you may silently get incorrect results on subsequent
-        invocations of the model. The tracer will try to emit warnings when
-        doing something that may cause an incorrect trace to be produced.
-
-    Args:
-        func (callable or torch.nn.Module):  A Python function or `torch.nn.Module`
-            that will be run with `example_inputs`. `func` arguments and return
-            values  must be tensors or (possibly nested) tuples that contain
-            tensors. When a module is passed `torch.jit.trace`, only the
-            ``forward`` method is run and traced (see :func:`torch.jit.trace
-            <torch.jit.trace_module>` for details).
-
-    Keyword arguments:
-        example_inputs (tuple or torch.Tensor or None, optional): A tuple of example
-            inputs that will be passed to the function while tracing.
-            Default: ``None``. Either this argument or ``example_kwarg_inputs``
-            should be specified. The resulting trace can be run with inputs of
-            different types and shapes assuming the traced operations support those
-            types and shapes. `example_inputs` may also be a single Tensor in which
-            case it is automatically wrapped in a tuple. When the value is None,
-            ``example_kwarg_inputs`` should be specified.
-
-        check_trace (``bool``, optional): Check if the same inputs run through
-            traced code produce the same outputs. Default: ``True``. You might want
-            to disable this if, for example, your network contains non-
-            deterministic ops or if you are sure that the network is correct despite
-            a checker failure.
-
-        check_inputs (list of tuples, optional): A list of tuples of input
-            arguments that should be used to check the trace against what is
-            expected. Each tuple is equivalent to a set of input arguments that
-            would be specified in ``example_inputs``. For best results, pass in
-            a set of checking inputs representative of the space of shapes and
-            types of inputs you expect the network to see.  If not specified,
-            the original ``example_inputs`` are used for checking
-        check_tolerance (float, optional): Floating-point comparison tolerance
-            to use in the checker procedure.  This can be used to relax the
-            checker strictness in the event that results diverge numerically
-            for a known reason, such as operator fusion.
-        strict (``bool``, optional): run the tracer in a strict mode or not
-            (default: ``True``). Only turn this off when you want the tracer to
-            record your mutable container types (currently ``list``/``dict``)
-            and you are sure that the container you are using in your
-            problem is a ``constant`` structure and does not get used as
-            control flow (if, for) conditions.
-        example_kwarg_inputs (dict, optional): This parameter is a pack of keyword
-            arguments of example inputs that will be passed to the function while
-            tracing. Default: ``None``. Either this argument or ``example_inputs``
-            should be specified. The dict will be unpacking by the arguments name
-            of the traced function. If the keys of the dict don't not match with
-            the traced function's arguments name, a runtime exception will be raised.
-
-    Returns:
-        If `func` is `nn.Module` or ``forward`` of `nn.Module`, `trace` returns
-        a :class:`ScriptModule` object with a single ``forward`` method
-        containing the traced code.  The returned `ScriptModule` will
-        have the same set of sub-modules and parameters as the original
-        ``nn.Module``.  If ``func`` is a standalone function, ``trace``
-        returns `ScriptFunction`.
-
-    Example (tracing a function):
-
-    .. testcode::
-
-        import torch
-
-        def foo(x, y):
-            return 2 * x + y
-
-        # Run `foo` with the provided inputs and record the tensor operations
-        traced_foo = torch.jit.trace(foo, (torch.rand(3), torch.rand(3)))
-
-        # `traced_foo` can now be run with the TorchScript interpreter or saved
-        # and loaded in a Python-free environment
-
-    Example (tracing an existing module)::
-
-        import torch
-        import torch.nn as nn
-
-        class Net(nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.conv = nn.Conv2d(1, 1, 3)
-
-            def forward(self, x):
-                return self.conv(x)
-
-        n = Net()
-        example_weight = torch.rand(1, 1, 3, 3)
-        example_forward_input = torch.rand(1, 1, 3, 3)
-
-        # Trace a specific method and construct `ScriptModule` with
-        # a single `forward` method
-        module = torch.jit.trace(n.forward, example_forward_input)
-
-        # Trace a module (implicitly traces `forward`) and construct a
-        # `ScriptModule` with a single `forward` method
-        module = torch.jit.trace(n, example_forward_input)
-
-    """
-    if not _enabled:
-        return func
-    if optimize is not None:
-        warnings.warn(
-            "`optimize` is deprecated and has no effect. Use `with torch.jit.optimized_execution() instead"
-        )
-
     if isinstance(func, torch.jit.ScriptModule):
         # it is hard to trace it because the forward method on ScriptModule is already defined, so it
         # would result in an error.
@@ -910,7 +803,318 @@ def trace(
     return traced
 
 
-_trace_module_map: Optional[Dict[Any, Any]] = None
+class _ExportType(str, Enum):
+    DIRECT_EXPORT = "DIRECT_EXPORT"
+    TRACE_AND_EXPORT = "TRACE_AND_EXPORT"
+    SOURCE_TO_SOURCE = "SOURCE_TO_SOURCE"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class _ExportOutcome(str, Enum):
+    SUCCESS = "SUCCESS"
+    FAILED_TO_EXPORT = "FAILED_TO_EXPORT"
+    FAILED_TO_RUN = "FAILED_TO_RUN"
+    ACCURACY_ERROR = "ACCURACY_ERROR"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+def trace(
+    func,
+    example_inputs=None,
+    optimize=None,
+    check_trace=True,
+    check_inputs=None,
+    check_tolerance=1e-5,
+    strict=True,
+    _force_outplace=False,
+    _module_class=None,
+    _compilation_unit=_python_cu,
+    example_kwarg_inputs=None,
+    _store_inputs=True,
+):
+    r"""
+    Trace a function and return an executable  or :class:`ScriptFunction` that will be optimized using just-in-time compilation.
+
+    Tracing is ideal for code that operates only on
+    ``Tensor``\\s and lists, dictionaries, and
+    tuples of ``Tensor``\\s.
+
+    Using `torch.jit.trace` and `torch.jit.trace_module`, you can turn an
+    existing module or Python function into a TorchScript
+    :class:`ScriptFunction` or :class:`ScriptModule`. You must provide example
+    inputs, and we run the function, recording the operations performed on all
+    the tensors.
+
+    * The resulting recording of a standalone function produces `ScriptFunction`.
+    * The resulting recording of `nn.Module.forward` or `nn.Module` produces
+      `ScriptModule`.
+
+    This module also contains any parameters that the original
+    module had as well.
+
+    Warning:
+        Tracing only correctly records functions and modules which are not data
+        dependent (e.g., do not have conditionals on data in tensors) and do not have
+        any untracked external dependencies (e.g., perform input/output or
+        access global variables). Tracing only records operations done when the given
+        function is run on the given tensors. Therefore, the returned
+        `ScriptModule` will always run the same traced graph on any input. This
+        has some important implications when your module is expected to run
+        different sets of operations, depending on the input and/or the module
+        state. For example,
+
+        * Tracing will not record any control-flow like if-statements or loops.
+          When this control-flow is constant across your module, this is fine
+          and it often inlines the control-flow decisions. But sometimes the
+          control-flow is actually part of the model itself. For instance, a
+          recurrent network is a loop over the (possibly dynamic) length of an
+          input sequence.
+        * In the returned :class:`ScriptModule`, operations that have different
+          behaviors in ``training`` and ``eval`` modes will always behave as if
+          it is in the mode it was in during tracing, no matter which mode the
+          `ScriptModule` is in.
+
+        In cases like these, tracing would not be appropriate and
+        :func:`scripting <torch.jit.script>` is a better choice. If you trace
+        such models, you may silently get incorrect results on subsequent
+        invocations of the model. The tracer will try to emit warnings when
+        doing something that may cause an incorrect trace to be produced.
+
+    Args:
+        func (callable or torch.nn.Module):  A Python function or `torch.nn.Module`
+            that will be run with `example_inputs`. `func` arguments and return
+            values  must be tensors or (possibly nested) tuples that contain
+            tensors. When a module is passed `torch.jit.trace`, only the
+            ``forward`` method is run and traced (see :func:`torch.jit.trace
+            <torch.jit.trace_module>` for details).
+
+    Keyword arguments:
+        example_inputs (tuple or torch.Tensor or None, optional): A tuple of example
+            inputs that will be passed to the function while tracing.
+            Default: ``None``. Either this argument or ``example_kwarg_inputs``
+            should be specified. The resulting trace can be run with inputs of
+            different types and shapes assuming the traced operations support those
+            types and shapes. `example_inputs` may also be a single Tensor in which
+            case it is automatically wrapped in a tuple. When the value is None,
+            ``example_kwarg_inputs`` should be specified.
+
+        check_trace (``bool``, optional): Check if the same inputs run through
+            traced code produce the same outputs. Default: ``True``. You might want
+            to disable this if, for example, your network contains non-
+            deterministic ops or if you are sure that the network is correct despite
+            a checker failure.
+
+        check_inputs (list of tuples, optional): A list of tuples of input
+            arguments that should be used to check the trace against what is
+            expected. Each tuple is equivalent to a set of input arguments that
+            would be specified in ``example_inputs``. For best results, pass in
+            a set of checking inputs representative of the space of shapes and
+            types of inputs you expect the network to see.  If not specified,
+            the original ``example_inputs`` are used for checking
+        check_tolerance (float, optional): Floating-point comparison tolerance
+            to use in the checker procedure.  This can be used to relax the
+            checker strictness in the event that results diverge numerically
+            for a known reason, such as operator fusion.
+        strict (``bool``, optional): run the tracer in a strict mode or not
+            (default: ``True``). Only turn this off when you want the tracer to
+            record your mutable container types (currently ``list``/``dict``)
+            and you are sure that the container you are using in your
+            problem is a ``constant`` structure and does not get used as
+            control flow (if, for) conditions.
+        example_kwarg_inputs (dict, optional): This parameter is a pack of keyword
+            arguments of example inputs that will be passed to the function while
+            tracing. Default: ``None``. Either this argument or ``example_inputs``
+            should be specified. The dict will be unpacking by the arguments name
+            of the traced function. If the keys of the dict don't not match with
+            the traced function's arguments name, a runtime exception will be raised.
+
+    Returns:
+        If `func` is `nn.Module` or ``forward`` of `nn.Module`, `trace` returns
+        a :class:`ScriptModule` object with a single ``forward`` method
+        containing the traced code.  The returned `ScriptModule` will
+        have the same set of sub-modules and parameters as the original
+        ``nn.Module``.  If ``func`` is a standalone function, ``trace``
+        returns `ScriptFunction`.
+
+    Example (tracing a function):
+
+    .. testcode::
+
+        import torch
+
+        def foo(x, y):
+            return 2 * x + y
+
+        # Run `foo` with the provided inputs and record the tensor operations
+        traced_foo = torch.jit.trace(foo, (torch.rand(3), torch.rand(3)))
+
+        # `traced_foo` can now be run with the TorchScript interpreter or saved
+        # and loaded in a Python-free environment
+
+    Example (tracing an existing module)::
+
+        import torch
+        import torch.nn as nn
+
+
+        class Net(nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.conv = nn.Conv2d(1, 1, 3)
+
+            def forward(self, x):
+                return self.conv(x)
+
+
+        n = Net()
+        example_weight = torch.rand(1, 1, 3, 3)
+        example_forward_input = torch.rand(1, 1, 3, 3)
+
+        # Trace a specific method and construct `ScriptModule` with
+        # a single `forward` method
+        module = torch.jit.trace(n.forward, example_forward_input)
+
+        # Trace a module (implicitly traces `forward`) and construct a
+        # `ScriptModule` with a single `forward` method
+        module = torch.jit.trace(n, example_forward_input)
+
+    """
+    if not _enabled:
+        return func
+    if optimize is not None:
+        warnings.warn(
+            "`optimize` is deprecated and has no effect. "
+            "Use `with torch.jit.optimized_execution()` instead",
+            FutureWarning,
+            stacklevel=2,
+        )
+
+    from torch._utils_internal import (
+        check_if_torch_exportable,
+        log_torch_jit_trace_exportability,
+        log_torchscript_usage,
+    )
+
+    traced_func = _trace_impl(
+        func,
+        example_inputs,
+        optimize,
+        check_trace,
+        check_inputs,
+        check_tolerance,
+        strict,
+        _force_outplace,
+        _module_class,
+        _compilation_unit,
+        example_kwarg_inputs,
+        _store_inputs,
+    )
+    log_torchscript_usage("trace", model_id=_get_model_id(traced_func))
+
+    if check_if_torch_exportable():
+        from torch._export.converter import TS2EPConverter
+        from torch.export._trace import (
+            _convert_ts_to_export_experimental,
+            _process_jit_trace_inputs_for_export,
+        )
+
+        traced_func_for_export = _trace_impl(
+            func,
+            example_inputs=example_inputs,
+            optimize=optimize,
+            check_trace=False,
+            check_inputs=check_inputs,
+            check_tolerance=check_tolerance,
+            strict=strict,
+            _force_outplace=_force_outplace,
+            _module_class=_module_class,
+            _compilation_unit=_compilation_unit,
+            example_kwarg_inputs=example_kwarg_inputs,
+            _store_inputs=_store_inputs,
+        )
+
+        export_args, _ = _process_jit_trace_inputs_for_export(
+            example_inputs, example_kwarg_inputs
+        )
+
+        def _log_exportability(func_to_export, export_func, export_args, export_type):
+            try:
+                traced_result = func_to_export(*export_args)
+            except Exception as e:
+                _ = e
+                log_torch_jit_trace_exportability(
+                    "trace", str(export_type), str(_ExportOutcome.SUCCESS), "succeeded"
+                )
+                return
+
+            try:
+                ep_module = export_func(func_to_export, export_args)
+            except Exception as e:
+                log_torch_jit_trace_exportability(
+                    "trace",
+                    str(export_type),
+                    str(_ExportOutcome.FAILED_TO_EXPORT),
+                    str(e),
+                )
+                return
+
+            try:
+                export = ep_module(*export_args)
+            except Exception as e:
+                log_torch_jit_trace_exportability(
+                    "trace", str(export_type), str(_ExportOutcome.FAILED_TO_RUN), str(e)
+                )
+                return
+
+            if not analyze_ts_result_with_export_result(export, traced_result):
+                log_torch_jit_trace_exportability(
+                    "trace",
+                    str(export_type),
+                    str(_ExportOutcome.ACCURACY_ERROR),
+                    "accuracy error",
+                )
+                return
+
+            log_torch_jit_trace_exportability(
+                "trace", str(export_type), str(_ExportOutcome.SUCCESS), "succeeded"
+            )
+
+        def _direct_export_and_lower(func, export_args):
+            return torch.export.export(func, export_args, strict=False).module()
+
+        def _convert_ts_to_export_source_to_source(func, export_args):
+            return TS2EPConverter(func, export_args).convert().module()
+
+        # torch.jit.trace is noop when the original module is torch.jit.ScriptModule
+        if not isinstance(traced_func_for_export, torch.jit.ScriptModule):
+            _log_exportability(
+                traced_func_for_export,
+                _direct_export_and_lower,
+                export_args,
+                _ExportType.DIRECT_EXPORT,
+            )
+
+        _log_exportability(
+            traced_func_for_export,
+            _convert_ts_to_export_experimental,
+            export_args,
+            _ExportType.TRACE_AND_EXPORT,
+        )
+        _log_exportability(
+            traced_func_for_export,
+            _convert_ts_to_export_source_to_source,
+            export_args,
+            _ExportType.SOURCE_TO_SOURCE,
+        )
+
+    return traced_func
+
+
+_trace_module_map: Optional[dict[Any, Any]] = None
 
 
 def trace_module(
@@ -928,8 +1132,9 @@ def trace_module(
     _store_inputs=True,
 ):
     """
-    Trace a module and return an executable :class:`ScriptModule` that will be optimized
-    using just-in-time compilation. When a module is passed to :func:`torch.jit.trace <torch.jit.trace>`, only
+    Trace a module and return an executable :class:`ScriptModule` that will be optimized using just-in-time compilation.
+
+    When a module is passed to :func:`torch.jit.trace <torch.jit.trace>`, only
     the ``forward`` method is run and traced. With ``trace_module``, you can specify a dictionary of
     method names to example inputs to trace (see the ``inputs``) argument below.
 
@@ -973,8 +1178,9 @@ def trace_module(
         import torch
         import torch.nn as nn
 
+
         class Net(nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.conv = nn.Conv2d(1, 1, 3)
 
@@ -999,7 +1205,7 @@ def trace_module(
 
         # Trace specific methods on a module (specified in `inputs`), constructs
         # a `ScriptModule` with `forward` and `weighted_kernel_sum` methods
-        inputs = {'forward' : example_forward_input, 'weighted_kernel_sum' : example_weight}
+        inputs = {"forward": example_forward_input, "weighted_kernel_sum": example_weight}
         module = torch.jit.trace_module(n, inputs)
 
     """
@@ -1007,7 +1213,10 @@ def trace_module(
         return mod
     if optimize is not None:
         warnings.warn(
-            "`optimize` is deprecated and has no effect. Use `with torch.jit.optimized_execution() instead"
+            "`optimize` is deprecated and has no effect. "
+            "Use `with torch.jit.optimized_execution()` instead",
+            FutureWarning,
+            stacklevel=2,
         )
 
     var_lookup_fn = _create_interpreter_name_lookup_fn(0)
@@ -1020,7 +1229,7 @@ def trace_module(
 
     old_module_map = torch.jit._trace._trace_module_map
     try:
-        trace_module_map: Dict[Any, Any] = {}
+        trace_module_map: dict[Any, Any] = {}
 
         def register_submods(mod, prefix):
             for name, child in mod.named_children():
@@ -1113,9 +1322,10 @@ def trace_module(
 
 
 def is_tracing():
-    """
-    Returns ``True`` in tracing (if a function is called during the tracing of
-    code with ``torch.jit.trace``) and ``False`` otherwise.
+    """Return a boolean value.
+
+    Returns ``True`` in tracing (if a function is called during the
+    tracing of code with ``torch.jit.trace``) and ``False`` otherwise.
     """
     if is_scripting():
         return False
@@ -1252,7 +1462,8 @@ def _get_trace_graph(
     return_inputs=False,
     _return_inputs_states=False,
 ):
-    """
+    """Return a tuple on tracing a function or model.
+
     .. warning::
         This function is internal-only and should only be used by the ONNX
         exporter. If you are trying to get a graph through tracing, please go

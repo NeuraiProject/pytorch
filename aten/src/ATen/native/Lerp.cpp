@@ -10,8 +10,7 @@
 #include <ATen/ops/lerp_native.h>
 #endif
 
-namespace at {
-namespace meta {
+namespace at::meta {
 
 TORCH_META_FUNC(lerp_Tensor)(
     const Tensor& self, const Tensor& end, const Tensor& weight) {
@@ -20,10 +19,11 @@ TORCH_META_FUNC(lerp_Tensor)(
   TORCH_CHECK(self.dtype() == weight.dtype(), "expected dtype ", self.dtype(),
               " for `weight` but got dtype ", weight.dtype());
   build(at::TensorIteratorConfig()
+        .allow_cpu_scalars(true)
         .add_output(maybe_get_output())
-        .add_input(self)
-        .add_input(end)
-        .add_input(weight));
+        .add_const_input(self)
+        .add_const_input(end)
+        .add_const_input(weight));
 }
 
 TORCH_META_FUNC(lerp_Scalar)(
@@ -33,9 +33,9 @@ TORCH_META_FUNC(lerp_Scalar)(
   build_binary_op(maybe_get_output(), self, end);
 }
 
-}  // namespace meta
+}  // namespace at::meta
 
-namespace native {
+namespace at::native {
 
 TORCH_IMPL_FUNC(lerp_Tensor)(
     const Tensor& /*self*/, const Tensor& /*end*/, const Tensor& weight, const Tensor& /*out*/) {
@@ -50,5 +50,4 @@ TORCH_IMPL_FUNC(lerp_Scalar)(
 DEFINE_DISPATCH(lerp_kernel_scalar_weight);
 DEFINE_DISPATCH(lerp_kernel_tensor_weight);
 
-} // namespace native
-} // namespace at
+} // namespace at::native

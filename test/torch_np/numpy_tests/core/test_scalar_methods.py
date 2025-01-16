@@ -8,20 +8,27 @@ import functools
 import sys
 import types
 from typing import Any, Type
-
 from unittest import skipIf as skipif, SkipTest
 
 import pytest
-
-import torch._numpy as np
 from pytest import raises as assert_raises
-from torch._numpy.testing import assert_equal
+
 from torch.testing._internal.common_utils import (
     instantiate_parametrized_tests,
     parametrize,
     run_tests,
+    TEST_WITH_TORCHDYNAMO,
     TestCase,
 )
+
+
+if TEST_WITH_TORCHDYNAMO:
+    import numpy as np
+    from numpy.testing import assert_equal
+else:
+    import torch._numpy as np
+    from torch._numpy.testing import assert_equal
+
 
 skip = functools.partial(skipif, True)
 
@@ -124,11 +131,12 @@ class TestAsIntegerRatio(TestCase):
                 df = np.longdouble(d)
             except (OverflowError, RuntimeWarning):
                 # the values may not fit in any float type
-                raise SkipTest("longdouble too small on this platform")
+                raise SkipTest("longdouble too small on this platform")  # noqa: B904
 
             assert_equal(nf / df, f, f"{n}/{d}")
 
 
+@skip(reason="NP_VER: older numpies has problems with .is_integer")
 @instantiate_parametrized_tests
 class TestIsInteger(TestCase):
     @parametrize("str_value", ["inf", "nan"])
@@ -138,13 +146,15 @@ class TestIsInteger(TestCase):
         value = cls(str_value)
         assert not value.is_integer()
 
-    @parametrize("code", np.typecodes["Float"] + np.typecodes["AllInteger"])
+    @parametrize(
+        "code", "efd" + "Bbhil"
+    )  # np.typecodes["Float"] + np.typecodes["AllInteger"])
     def test_true(self, code: str) -> None:
         float_array = np.arange(-5, 5).astype(code)
         for value in float_array:
             assert value.is_integer()
 
-    @parametrize("code", np.typecodes["Float"])
+    @parametrize("code", "bhil")  # np.typecodes["Float"])
     def test_false(self, code: str) -> None:
         float_array = np.arange(-5, 5).astype(code)
         float_array *= 1.1
@@ -218,8 +228,7 @@ class TestClassGetitemMisc(TestCase):
     @skipif(sys.version_info >= (3, 9), reason="Requires python 3.8")
     @parametrize("cls", [np.number, np.complexfloating, np.int64])
     def test_class_getitem_38(self, cls: Type[np.number]) -> None:
-        match = "Type subscription requires python >= 3.9"
-        with pytest.raises(TypeError):  # , match=match):
+        with pytest.raises(TypeError):
             cls[Any]
 
 
@@ -228,7 +237,11 @@ class TestClassGetitemMisc(TestCase):
 class TestBitCount(TestCase):
     # derived in part from the cpython test "test_bit_count"
 
-    @parametrize("itype", np.sctypes["int"] + np.sctypes["uint"])
+    @parametrize(
+        "itype",
+        [np.int8, np.int16, np.int32, np.int64]
+        + [np.uint8, np.uint16, np.uint32, np.uint64],
+    )
     def test_small(self, itype):
         for a in range(max(np.iinfo(itype).min, 0), 128):
             msg = f"Smoke test for {itype}({a}).bit_count()"

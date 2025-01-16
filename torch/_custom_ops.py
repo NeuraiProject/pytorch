@@ -1,3 +1,4 @@
+# mypy: allow-untyped-defs
 import inspect
 
 from torch._custom_op.impl import (
@@ -8,6 +9,7 @@ from torch._custom_op.impl import (
     validate_namespace,
 )
 from torch.library import get_ctx
+
 
 __all__ = [
     "custom_op",
@@ -61,7 +63,7 @@ def custom_op(qualname, func_or_schema=None):
         >>> # we will infer the types of the inputs and outputs.
         >>> @torch._custom_ops.custom_op("mylibrary::numpy_sin")
         >>> def numpy_sin(x: Tensor) -> Tensor:
-        >>>     raise NotImplementedError()
+        >>>     raise NotImplementedError
         >>>
         >>> # The custom op is now accessible via the torch.ops module:
         >>> torch.ops.mylibrary.numpy_sin
@@ -103,7 +105,7 @@ def custom_op(qualname, func_or_schema=None):
                 f"is passed to `custom_op`"
             )
 
-        schema = infer_schema(func)
+        schema = infer_schema(func, mutates_args=())
         _custom_op_with_schema(qualname, schema)
         return func
 
@@ -141,30 +143,30 @@ def impl(qualname, *, device_types=("cpu", "cuda"), func=None):
         >>> # We need to provide the API a "prototype function"
         >>> # (a function that returns NotImplementedError), from which
         >>> # we will infer the types of the inputs and outputs.
-        >>> @torch._custom_ops.custom_op("mylibrary::numpy_sin")
-        >>> def numpy_sin(x: Tensor) -> Tensor:
-        >>>     raise NotImplementedError()
+        >>> @torch._custom_ops.custom_op("mylibrary::numpy_cos")
+        >>> def numpy_cos(x: Tensor) -> Tensor:
+        >>>     raise NotImplementedError
         >>>
         >>> # The custom op is now accessible via the torch.ops module:
-        >>> torch.ops.mylibrary.numpy_sin
+        >>> torch.ops.mylibrary.numpy_cos
         >>>
         >>> # Step 2: Register an implementation for various PyTorch subsystems
         >>>
         >>> # Register an implementation for CPU tensors
-        >>> @torch._custom_ops.impl("mylibrary::numpy_sin", device_types="cpu")
-        >>> def numpy_sin_impl_cpu(x):
-        >>>     return torch.from_numpy(np.sin(x.numpy()))
+        >>> @torch._custom_ops.impl("mylibrary::numpy_cos", device_types="cpu")
+        >>> def numpy_cos_impl_cpu(x):
+        >>>     return torch.from_numpy(np.cos(x.numpy()))
         >>>
         >>> # Register an implementation for CUDA tensors
-        >>> @torch._custom_ops.impl("mylibrary::numpy_sin", device_types="cuda")
-        >>> def numpy_sin_impl_cuda(x):
-        >>>     return torch.from_numpy(np.sin(x.cpu().numpy())).to(x.device)
+        >>> @torch._custom_ops.impl("mylibrary::numpy_cos", device_types="cuda")
+        >>> def numpy_cos_impl_cuda(x):
+        >>>     return torch.from_numpy(np.cos(x.cpu().numpy())).to(x.device)
         >>>
         >>> x = torch.randn(3)
-        >>> torch.ops.mylibrary.numpy_sin(x)  # calls numpy_sin_impl_cpu
+        >>> torch.ops.mylibrary.numpy_cos(x)  # calls numpy_cos_impl_cpu
         >>>
         >>> x_cuda = x.cuda()
-        >>> torch.ops.mylibrary.numpy_sin(x)  # calls numpy_sin_impl_cuda
+        >>> torch.ops.mylibrary.numpy_cos(x)  # calls numpy_cos_impl_cuda
 
     """
 
@@ -207,9 +209,9 @@ def impl_abstract(qualname, *, func=None):
         >>> # Example 1: an operator without data-dependent output shape
         >>> @torch._custom_ops.custom_op("mylibrary::custom_linear")
         >>> def custom_linear(x: Tensor, weight: Tensor, bias: Tensor) -> Tensor:
-        >>>     raise NotImplementedError()
+        >>>     raise NotImplementedError
         >>>
-        >>> @torch._custom_ops.impl_abstract("mylibrary::custom_linear"):
+        >>> @torch._custom_ops.impl_abstract("mylibrary::custom_linear")
         >>> def custom_linear_abstract(x, weight):
         >>>     assert x.dim() == 2
         >>>     assert weight.dim() == 2
@@ -225,7 +227,7 @@ def impl_abstract(qualname, *, func=None):
         >>> def custom_nonzero(x: Tensor) -> Tensor:
         >>>     ...
         >>>
-        >>> @torch._custom_ops.impl_abstract("mylibrary::custom_nonzero"):
+        >>> @torch._custom_ops.impl_abstract("mylibrary::custom_nonzero")
         >>> def custom_nonzero_abstract(x):
         >>>     # Number of nonzero-elements is data-dependent.
         >>>     # Since we cannot peek at the data in an abstract impl,
@@ -250,7 +252,7 @@ def impl_abstract(qualname, *, func=None):
     """
     import torch.library
 
-    return torch.library.impl_abstract(qualname, func, _stacklevel=2)
+    return torch.library.register_fake(qualname, func, _stacklevel=2)
 
 
 def impl_save_for_backward(qualname, *, func=None):

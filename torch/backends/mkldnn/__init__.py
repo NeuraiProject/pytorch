@@ -1,12 +1,14 @@
+# mypy: allow-untyped-defs
 import sys
 from contextlib import contextmanager
+from typing import TYPE_CHECKING
 
 import torch
 from torch.backends import __allow_nonbracketed_mutation, ContextProp, PropModule
 
 
 def is_available():
-    r"""Returns whether PyTorch is built with MKL-DNN support."""
+    r"""Return whether PyTorch is built with MKL-DNN support."""
     return torch._C._has_mkldnn
 
 
@@ -17,7 +19,8 @@ VERBOSE_ON_CREATION = 2
 
 class verbose:
     """
-    On-demand oneDNN (former MKL-DNN) verbosing functionality
+    On-demand oneDNN (former MKL-DNN) verbosing functionality.
+
     To make it easier to debug performance issues, oneDNN can dump verbose
     messages containing information like kernel size, input data size and
     execution duration while executing the kernel. The verbosing functionality
@@ -61,21 +64,23 @@ class verbose:
         return False
 
 
-def set_flags(_enabled):
-    orig_flags = (torch._C._get_mkldnn_enabled(),)
+def set_flags(_enabled, _deterministic=None):
+    orig_flags = (torch._C._get_mkldnn_enabled(), torch._C._get_mkldnn_deterministic())
     torch._C._set_mkldnn_enabled(_enabled)
+    if _deterministic is not None:
+        torch._C._set_mkldnn_deterministic(_deterministic)
     return orig_flags
 
 
 @contextmanager
-def flags(enabled=False):
+def flags(enabled=False, deterministic=False):
     with __allow_nonbracketed_mutation():
-        orig_flags = set_flags(enabled)
+        orig_flags = set_flags(enabled, deterministic)
     try:
         yield
     finally:
         with __allow_nonbracketed_mutation():
-            set_flags(orig_flags[0])
+            set_flags(*orig_flags)
 
 
 class MkldnnModule(PropModule):
@@ -83,8 +88,13 @@ class MkldnnModule(PropModule):
         super().__init__(m, name)
 
     enabled = ContextProp(torch._C._get_mkldnn_enabled, torch._C._set_mkldnn_enabled)
+    deterministic = ContextProp(
+        torch._C._get_mkldnn_deterministic, torch._C._set_mkldnn_deterministic
+    )
 
 
-# Cool stuff from torch/backends/cudnn/__init__.py and
-# https://stackoverflow.com/questions/2447353/getattr-on-a-module/7668273#7668273
+if TYPE_CHECKING:
+    enabled: ContextProp
+    deterministic: ContextProp
+
 sys.modules[__name__] = MkldnnModule(sys.modules[__name__], __name__)

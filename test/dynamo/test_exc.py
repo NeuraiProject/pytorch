@@ -10,7 +10,12 @@ import torch._dynamo.test_case
 from torch._dynamo.comptime import comptime
 from torch._dynamo.exc import Unsupported
 from torch.testing._internal.common_device_type import skipIf
-from torch.testing._internal.common_utils import munge_exc, TEST_Z3
+from torch.testing._internal.common_utils import (
+    IS_FBCODE,
+    munge_exc,
+    skipIfWindows,
+    TEST_Z3,
+)
 from torch.testing._internal.logging_utils import LoggingTestCase, make_logging_test
 
 
@@ -32,7 +37,7 @@ class ExcTests(LoggingTestCase):
                 torch.randn(1)
             ),
             """\
-'call_function graph_break in skip_files _dynamo/decorators.py, skip reason: skipped according skipfiles.SKIP_DIRS'
+'skip function graph_break in file _dynamo/decorators.py'
 
 from user code:
    File "test_exc.py", line N, in fn001
@@ -43,10 +48,11 @@ from user code:
 
     @torch._dynamo.config.patch(verbose=True, suppress_errors=True)
     @make_logging_test()
+    @unittest.skipIf(IS_FBCODE, "stack trace slightly different in fbcode")
     def test_internal_error_suppress_errors(self, records):
         def fn001(x):
             def f(ctx):
-                raise AssertionError()
+                raise AssertionError
 
             comptime(f)
 
@@ -61,7 +67,7 @@ WON'T CONVERT fn001 test_exc.py line N
 ========== TorchDynamo Stack Trace ==========
 Traceback (most recent call last):
   File "test_exc.py", line N, in f
-    raise AssertionError()
+    raise AssertionError
 AssertionError:
 
 from user code:
@@ -83,10 +89,10 @@ from user code:
     def test_not_implemented_error(self, records):
         def fn001(x):
             def f(ctx):
-                raise NotImplementedError()
+                raise NotImplementedError
 
             # Ensure graph break is not possible
-            for i in range(3):
+            for _ in range(3):
                 comptime(f)
 
         torch.compile(fn001, backend="eager")(torch.randn(1))
@@ -100,15 +106,14 @@ WON'T CONVERT fn001 test_exc.py line N
 due to:
 Traceback (most recent call last):
   File "test_exc.py", line N, in f
-    raise NotImplementedError()
-torch._dynamo.exc.InternalTorchDynamoError:
+    raise NotImplementedError
+torch._dynamo.exc.InternalTorchDynamoError: NotImplementedError:
 
 from user code:
    File "test_exc.py", line N, in fn001
     comptime(f)""",
         )
 
-    @unittest.expectedFailure
     @torch._dynamo.config.patch(inject_BUILD_SET_unimplemented_TESTING_ONLY=True)
     @make_logging_test(dynamo=logging.DEBUG)
     def test_unsupported_error(self, records):
@@ -128,7 +133,7 @@ from user code:
             # NB: avoid decorator, as 3.11 changed the line number attributed
             # in this situation
             def f(ctx):
-                raise AssertionError()
+                raise AssertionError
 
             comptime(f)
 
@@ -158,20 +163,35 @@ from user code:
 
         torch.compile(fn001, backend="eager")(torch.randn(1))
 
-        record = self.getRecord(records, "Graph break:")
+        record = self.getRecord(records, "Graph break in user code")
 
         # TODO: This should also report the enclosing frames; need to plumb
         # frame object to it
         self.assertExpectedInline(
             munge_exc(record.getMessage()),
             """\
-Graph break: 'call_function graph_break in skip_files _dynamo/decorators.py, skip reason: skipped according skipfiles.SKIP_DIRS' from user code at:
+Graph break in user code at test_exc.py:N
+Reason: Unsupported: 'skip function graph_break in file _dynamo/decorators.py'
+User code traceback:
   File "test_exc.py", line N, in fn001
     return fn002(x)
   File "test_exc.py", line N, in fn002
     torch._dynamo.graph_break()
 """,  # noqa: B950
         )
+
+    @make_logging_test(graph_breaks=True)
+    def test_graph_break_log_generic_jump(self, records):
+        def fn(x):
+            if x.sum() > 0:
+                return x + 1
+            else:
+                return x - 1
+
+        torch.compile(fn, backend="eager")(torch.ones(3, 3))
+
+        # check for record existence
+        self.getRecord(records, "Graph break in user code")
 
     @torch._dynamo.config.patch(suppress_errors=False)
     def test_backend_suppress_line(self):
@@ -192,11 +212,17 @@ ReluCompileError:""",
 
     @skipIf(not TEST_Z3, "z3 not installed")
     @torch._dynamo.config.patch(
-        inject_EVALUATE_EXPR_flip_equality_TESTING_ONLY=True,
         assume_static_by_default=False,
+        suppress_errors=False,
+    )
+    @torch.fx.experimental._config.patch(
+        inject_EVALUATE_EXPR_flip_equality_TESTING_ONLY=True,
         translation_validation=True,
         translation_validation_no_bisect=True,
-        suppress_errors=False,
+    )
+    @skipIfWindows(
+        msg='AssertionError: "tran[551 chars]s1 s2 s3) s0)\n  ==> (<= (+ s1 s2) (+ s0 (* -1[511 chars][0])'  # noqa: PLR0133
+        != 'tran[551 chars]s1 s2) (+ s0 (* -1 s3)))\n  ==> (<= (+ s1 s2) [483 chars][0])"'
     )
     def test_trigger_on_error(self):
         from torch.fx.experimental.validator import ValidationException
@@ -213,15 +239,15 @@ translation validation failed.
 
 Model:
   ==> L['shape'][0]: 0
-  ==> L['shape'][1]: 0
-  ==> L['shape'][2]: 0
+  ==> L['shape'][1]: 1
+  ==> L['shape'][2]: 1
   ==> L['x'].size()[0]: 3
   ==> L['x'].storage_offset(): 0
   ==> L['x'].stride()[0]: 1
   ==> s0: 3
   ==> s1: 0
-  ==> s2: 0
-  ==> s3: 0
+  ==> s2: 1
+  ==> s3: 1
 
 Assertions:
   ==> (== 0 L['x'].storage_offset())
@@ -231,41 +257,34 @@ Assertions:
   ==> (== L['shape'][2] s3)
   ==> (== L['x'].size()[0] s0)
   ==> (> s0 1)
-  ==> (True)
 
 Target Expressions:
+  ==> (!= (+ s1 s2 s3) s0)
   ==> (<= 0 s1)
   ==> (<= 0 s2)
   ==> (<= 0 s3)
   ==> (<= 2 s0)
-  ==> (== 0 L['shape'][0])
-  ==> (== 0 L['shape'][1])
-  ==> (== 0 L['shape'][2])
   ==> (== 0 L['x'].storage_offset())
-  ==> (== 0 s1)
-  ==> (== 0 s2)
-  ==> (== 0 s3)
   ==> (== 1 L['x'].stride()[0])
+  ==> (== L['shape'][0] s1)
+  ==> (== L['shape'][1] s2)
+  ==> (== L['shape'][2] s3)
   ==> (== L['x'].size()[0] s0)
   ==> (> s0 0)
-  ==> (>= 9223372036854775806 s0)
-  ==> (>= 9223372036854775806 s1)
-  ==> (>= 9223372036854775806 s2)
-  ==> (>= 9223372036854775806 s3)
+  ==> (>= 0 s1)
 
 Failed Source Expressions:
-  ==> (!= 0 L['shape'][0])
-  ==> (!= 0 L['shape'][1])
-  ==> (!= 0 L['shape'][2])
   ==> (== (+ L['shape'][0] L['shape'][1] L['shape'][2]) L['x'].size()[0])""",
         )
 
     @skipIf(not TEST_Z3, "z3 not installed")
     @torch._dynamo.config.patch(
-        inject_EVALUATE_EXPR_flip_equality_TESTING_ONLY=True,
         assume_static_by_default=False,
-        translation_validation=True,
         suppress_errors=False,
+    )
+    @torch.fx.experimental._config.patch(
+        inject_EVALUATE_EXPR_flip_equality_TESTING_ONLY=True,
+        translation_validation=True,
     )
     def test_trigger_bisect_on_error(self):
         from torch.fx.experimental.validator import BisectValidationException
@@ -280,20 +299,20 @@ Failed Source Expressions:
             """\
 translation validation failed when evaluating: Eq(s1 + s2 + s3, s0)
 
-Failure ocurred while running node:
-    %split : [num_users=1] = call_method[target=split](args = (%l_x_, (%l_shape_0_, %l_shape_1_, %l_shape_2_)), kwargs = {})
+Failure occurred while running node:
+    %split : [num_users=3] = call_method[target=split](args = (%l_x_, (%l_shape_0_, %l_shape_1_, %l_shape_2_)), kwargs = {})
 
 Model:
-  ==> L['shape'][0]: -9223372036854775807
-  ==> L['shape'][1]: -9223372036854775807
-  ==> L['shape'][2]: -9223372036854775807
+  ==> L['shape'][0]: 1
+  ==> L['shape'][1]: 1
+  ==> L['shape'][2]: 0
   ==> L['x'].size()[0]: 3
   ==> L['x'].storage_offset(): 0
   ==> L['x'].stride()[0]: 1
   ==> s0: 3
-  ==> s1: -9223372036854775807
-  ==> s2: -9223372036854775807
-  ==> s3: -9223372036854775807
+  ==> s1: 1
+  ==> s2: 1
+  ==> s3: 0
 
 Assertions:
   ==> (== 0 L['x'].storage_offset())
@@ -306,9 +325,9 @@ Assertions:
 
 Target Expressions:
   ==> (!= (+ s1 s2 s3) s0)
-  ==> (<= -9223372036854775808 s1)
-  ==> (<= -9223372036854775808 s2)
-  ==> (<= -9223372036854775808 s3)
+  ==> (<= 0 s1)
+  ==> (<= 0 s2)
+  ==> (<= 0 s3)
   ==> (<= 2 s0)
   ==> (== 0 L['x'].storage_offset())
   ==> (== 1 L['x'].stride()[0])
@@ -317,10 +336,6 @@ Target Expressions:
   ==> (== L['shape'][2] s3)
   ==> (== L['x'].size()[0] s0)
   ==> (> s0 0)
-  ==> (>= 9223372036854775806 s0)
-  ==> (>= 9223372036854775807 s1)
-  ==> (>= 9223372036854775807 s2)
-  ==> (>= 9223372036854775807 s3)
 
 Failed Source Expressions:
   ==> (== (+ L['shape'][0] L['shape'][1] L['shape'][2]) L['x'].size()[0])""",

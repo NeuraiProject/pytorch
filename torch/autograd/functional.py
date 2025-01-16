@@ -1,8 +1,10 @@
-from typing import List, Tuple
+# mypy: allow-untyped-defs
 
 import torch
 from torch._vmap_internals import _vmap
+
 from . import forward_ad as fwAD
+
 
 __all__ = ["vjp", "jvp", "jacobian", "hessian", "hvp", "vhp"]
 
@@ -178,8 +180,8 @@ def _autograd_grad(
     assert isinstance(grad_outputs, tuple)
     assert len(outputs) == len(grad_outputs)
 
-    new_outputs: Tuple[torch.Tensor, ...] = tuple()
-    new_grad_outputs: Tuple[torch.Tensor, ...] = tuple()
+    new_outputs: tuple[torch.Tensor, ...] = ()
+    new_grad_outputs: tuple[torch.Tensor, ...] = ()
     for out, grad_out in zip(outputs, grad_outputs):
         if out is not None and out.requires_grad:
             new_outputs += (out,)
@@ -208,7 +210,7 @@ def _fill_in_zeros(grads, refs, strict, create_graph, stage):
     if stage not in ["back", "back_trick", "double_back", "double_back_trick"]:
         raise RuntimeError(f"Invalid stage argument '{stage}' to _fill_in_zeros")
 
-    res: Tuple[torch.Tensor, ...] = tuple()
+    res: tuple[torch.Tensor, ...] = ()
     for i, grads_i in enumerate(grads):
         if grads_i is None:
             if strict:
@@ -259,8 +261,7 @@ def _fill_in_zeros(grads, refs, strict, create_graph, stage):
 
 
 def vjp(func, inputs, v=None, create_graph=False, strict=False):
-    r"""Function that computes the dot product between a vector ``v`` and the
-    Jacobian of the given function at the point given by the inputs.
+    r"""Compute the dot product between a vector ``v`` and the Jacobian of the given function at the point given by the inputs.
 
     Args:
         func (function): a Python function that takes Tensor inputs and returns
@@ -318,7 +319,6 @@ def vjp(func, inputs, v=None, create_graph=False, strict=False):
         (tensor([2.4225, 2.3340]),
          (tensor([2., 2.]), tensor([3., 3.])))
     """
-
     with torch.enable_grad():
         is_inputs_tuple, inputs = _as_tuple(inputs, "inputs", "vjp")
         inputs = _grad_preprocess(inputs, create_graph=create_graph, need_graph=True)
@@ -356,8 +356,7 @@ def vjp(func, inputs, v=None, create_graph=False, strict=False):
 
 
 def jvp(func, inputs, v=None, create_graph=False, strict=False):
-    r"""Function that computes the dot product between  the Jacobian of
-    the given function at the point given by the inputs and a vector ``v``.
+    r"""Compute the dot product between the Jacobian of the given function at the point given by the inputs and a vector ``v``.
 
     Args:
         func (function): a Python function that takes Tensor inputs and returns
@@ -417,7 +416,6 @@ def jvp(func, inputs, v=None, create_graph=False, strict=False):
          tensor([5., 5.]))
 
     """
-
     with torch.enable_grad():
         is_inputs_tuple, inputs = _as_tuple(inputs, "inputs", "jvp")
         inputs = _grad_preprocess(inputs, create_graph=create_graph, need_graph=True)
@@ -471,8 +469,8 @@ def jvp(func, inputs, v=None, create_graph=False, strict=False):
 
 
 def _construct_standard_basis_for(
-    tensors: Tuple[torch.Tensor, ...], tensor_numels: Tuple[int, ...]
-) -> Tuple[torch.Tensor, ...]:
+    tensors: tuple[torch.Tensor, ...], tensor_numels: tuple[int, ...]
+) -> tuple[torch.Tensor, ...]:
     # This function:
     # - constructs a N=sum(tensor_numels) standard basis. i.e. an NxN identity matrix.
     # - Splits the identity matrix into chunks with each chunk size determined by `tensor_numels`.
@@ -550,9 +548,9 @@ def _jacfwd(func, inputs, strict=False, vectorize=False):
         is_outputs_tuple, outputs = output_info
         # Step 3: for each of the output tangents, split along dim 0
         jacobian_input_output = []
-        for jac, output_i in zip(outputs_before_split, outputs):
+        for jac_output_i, output_i in zip(outputs_before_split, outputs):
             jacobian_output_i_output = []
-            for jac, input_j in zip(jac.split(input_numels, dim=0), inputs):
+            for jac, input_j in zip(jac_output_i.split(input_numels, dim=0), inputs):
                 # We need to transpose the Jacobian because in forward AD, the
                 # batch dimension represents that of the inputs
                 jacobian_input_i_output_j = jac.permute(*range(1, jac.ndim), 0).reshape(
@@ -581,7 +579,7 @@ def jacobian(
     vectorize=False,
     strategy="reverse-mode",
 ):
-    r"""Function that computes the Jacobian of a given function.
+    r"""Compute the Jacobian of a given function.
 
     Args:
         func (function): a Python function that takes Tensor inputs and returns
@@ -758,9 +756,11 @@ def jacobian(
             # Step 3: The returned jacobian is one big tensor per input. In this step,
             # we split each Tensor by output.
             jacobian_input_output = []
-            for jac, input_i in zip(jacobians_of_flat_output, inputs):
+            for jac_input_i, input_i in zip(jacobians_of_flat_output, inputs):
                 jacobian_input_i_output = []
-                for jac, output_j in zip(jac.split(output_numels, dim=0), outputs):
+                for jac, output_j in zip(
+                    jac_input_i.split(output_numels, dim=0), outputs
+                ):
                     jacobian_input_i_output_j = jac.view(output_j.shape + input_i.shape)
                     jacobian_input_i_output.append(jacobian_input_i_output_j)
                 jacobian_input_output.append(jacobian_input_i_output)
@@ -779,11 +779,11 @@ def jacobian(
                 jacobian_output_input, (is_outputs_tuple, is_inputs_tuple)
             )
 
-        jacobian: Tuple[torch.Tensor, ...] = tuple()
+        jacobian: tuple[torch.Tensor, ...] = ()
 
         for i, out in enumerate(outputs):
             # mypy complains that expression and variable have different types due to the empty list
-            jac_i: Tuple[List[torch.Tensor]] = tuple([] for _ in range(len(inputs)))  # type: ignore[assignment]
+            jac_i: tuple[list[torch.Tensor]] = tuple([] for _ in range(len(inputs)))  # type: ignore[assignment]
             for j in range(out.nelement()):
                 vj = _autograd_grad(
                     (out.reshape(-1)[j],),
@@ -836,7 +836,7 @@ def hessian(
     vectorize=False,
     outer_jacobian_strategy="reverse-mode",
 ):
-    r"""Function that computes the Hessian of a given scalar function.
+    r"""Compute the Hessian of a given scalar function.
 
     Args:
         func (function): a Python function that takes Tensor inputs and returns
@@ -921,7 +921,6 @@ def hessian(
           tensor([[6., 0.],
                   [0., 6.]])))
     """
-
     is_inputs_tuple, inputs = _as_tuple(inputs, "inputs", "hessian")
     assert outer_jacobian_strategy in (
         "forward-mode",
@@ -968,8 +967,7 @@ def hessian(
 
 
 def vhp(func, inputs, v=None, create_graph=False, strict=False):
-    r"""Function that computes the dot product between a vector ``v`` and the
-    Hessian of a given scalar function at the point given by the inputs.
+    r"""Compute the dot product between vector ``v`` and Hessian of a  given scalar function at a specified point.
 
     Args:
         func (function): a Python function that takes Tensor inputs and returns
@@ -1023,7 +1021,6 @@ def vhp(func, inputs, v=None, create_graph=False, strict=False):
          (tensor([0., 0.]),
           tensor([6., 6.])))
     """
-
     with torch.enable_grad():
         is_inputs_tuple, inputs = _as_tuple(inputs, "inputs", "vhp")
         inputs = _grad_preprocess(inputs, create_graph=create_graph, need_graph=True)
@@ -1071,8 +1068,7 @@ def vhp(func, inputs, v=None, create_graph=False, strict=False):
 
 
 def hvp(func, inputs, v=None, create_graph=False, strict=False):
-    r"""Function that computes the dot product between the Hessian of a given scalar
-    function and a vector ``v`` at the point given by the inputs.
+    r"""Compute the dot product between the scalar function's Hessian and a vector ``v`` at a specified point.
 
     Args:
         func (function): a Python function that takes Tensor inputs and returns
@@ -1135,7 +1131,6 @@ def hvp(func, inputs, v=None, create_graph=False, strict=False):
         much faster with the current implementation.
 
     """
-
     with torch.enable_grad():
         is_inputs_tuple, inputs = _as_tuple(inputs, "inputs", "hvp")
         inputs = _grad_preprocess(inputs, create_graph=create_graph, need_graph=True)

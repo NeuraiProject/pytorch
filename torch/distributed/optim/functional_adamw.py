@@ -1,11 +1,16 @@
-from typing import Dict, List, Optional, Tuple
+# mypy: allow-untyped-defs
+from typing import Dict, List, Optional
 
 import torch
 import torch.optim._functional as F
-
 from torch import Tensor
+from torch.distributed.optim._deprecation_warning import (
+    _scripted_functional_optimizer_deprecation_warning,
+)
+
 
 __all__: List[str] = []
+
 
 # Define a TorchScript compatible Functional AdamW Optimizer
 # where we use these optimizer in a functional way.
@@ -22,7 +27,7 @@ class _FunctionalAdamW:
         self,
         params: List[Tensor],
         lr: float = 1e-3,
-        betas: Tuple[float, float] = (0.9, 0.999),
+        betas: tuple[float, float] = (0.9, 0.999),
         eps: float = 1e-8,
         weight_decay: float = 1e-2,
         amsgrad: bool = False,
@@ -31,6 +36,7 @@ class _FunctionalAdamW:
         fused: bool = False,
         _allow_empty_param_list: bool = False,
     ):
+        _scripted_functional_optimizer_deprecation_warning(stacklevel=2)
         if not 0.0 <= lr:
             raise ValueError(f"Invalid learning rate: {lr}")
         if not 0.0 <= eps:
@@ -69,6 +75,7 @@ class _FunctionalAdamW:
         exp_avg_sqs = []
         max_exp_avg_sqs = []
         state_steps: List[Tensor] = []
+        has_complex = torch.is_complex(param)
         if grad is not None:
             params_with_grad.append(param)
             grads.append(grad)
@@ -119,6 +126,7 @@ class _FunctionalAdamW:
                 fused=self.fused,
                 grad_scale=None,
                 found_inf=None,
+                has_complex=has_complex,
             )
 
     def step(self, gradients: List[Optional[Tensor]]):
@@ -137,8 +145,10 @@ class _FunctionalAdamW:
                 + f"Gradients length: {len(gradients)}"
             )
 
+        has_complex = False
         for param, gradient in zip(self.param_group["params"], gradients):
             if gradient is not None:
+                has_complex |= torch.is_complex(param)
                 params_with_grad.append(param)
                 grads.append(gradient)
                 # Lazy state initialization
@@ -189,4 +199,5 @@ class _FunctionalAdamW:
                 fused=self.fused,
                 grad_scale=None,
                 found_inf=None,
+                has_complex=has_complex,
             )

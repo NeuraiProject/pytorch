@@ -12,23 +12,28 @@ import re
 import subprocess
 import sys
 import unittest.mock
-from typing import Any, Callable, Iterator, List, Tuple, Generator
+from typing import Any, Callable
+from collections.abc import Iterator
 
 import torch
 
 from torch.testing import make_tensor
-from torch.testing._internal.common_utils import \
-    (IS_FBCODE, IS_JETSON, IS_MACOS, IS_SANDCASTLE, IS_WINDOWS, TestCase, run_tests, slowTest,
-     parametrize, subtest, instantiate_parametrized_tests, dtype_name, TEST_WITH_ROCM)
+from torch.testing._internal.common_utils import (
+    IS_FBCODE, IS_JETSON, IS_MACOS, IS_SANDCASTLE, IS_WINDOWS, TestCase, run_tests, slowTest,
+    parametrize, reparametrize, subtest, instantiate_parametrized_tests, dtype_name,
+    TEST_WITH_ROCM, decorateIf, skipIfRocm
+)
 from torch.testing._internal.common_device_type import \
     (PYTORCH_TESTING_DEVICE_EXCEPT_FOR_KEY, PYTORCH_TESTING_DEVICE_ONLY_FOR_KEY, dtypes,
-     get_device_type_test_bases, instantiate_device_type_tests, onlyCUDA, onlyNativeDeviceTypes,
+     get_device_type_test_bases, instantiate_device_type_tests, onlyCPU, onlyCUDA, onlyNativeDeviceTypes,
      deviceCountAtLeast, ops, expectedFailureMeta, OpDTypes)
 from torch.testing._internal.common_methods_invocations import op_db
 from torch.testing._internal import opinfo
 from torch.testing._internal.common_dtype import all_types_and_complex_and, floating_types
 from torch.testing._internal.common_modules import modules, module_db, ModuleInfo
 from torch.testing._internal.opinfo.core import SampleInput, DecorateInfo, OpInfo
+import operator
+import string
 
 # For testing TestCase methods and torch.testing functions
 class TestTesting(TestCase):
@@ -413,6 +418,28 @@ if __name__ == '__main__':
             self.assertTrue(set(dtypes) == set(dynamic_dtypes))
             self.assertTrue(set(dtypes) == set(dynamic_dispatch.dispatch_fn()))
 
+    @onlyCPU
+    @ops(
+        [
+            op
+            for op in op_db
+            if len(
+                op.supported_dtypes("cpu").symmetric_difference(
+                    op.supported_dtypes("cuda")
+                )
+            )
+            > 0
+        ][:1],
+        dtypes=OpDTypes.none,
+    )
+    def test_supported_dtypes(self, device, op):
+        self.assertNotEqual(op.supported_dtypes("cpu"), op.supported_dtypes("cuda"))
+        self.assertEqual(op.supported_dtypes("cuda"), op.supported_dtypes("cuda:0"))
+        self.assertEqual(
+            op.supported_dtypes(torch.device("cuda")),
+            op.supported_dtypes(torch.device("cuda", index=1)),
+        )
+
 instantiate_device_type_tests(TestTesting, globals())
 
 
@@ -462,7 +489,7 @@ if __name__ == '__main__':
         del env[PYTORCH_TESTING_DEVICE_ONLY_FOR_KEY]
         env[PYTORCH_TESTING_DEVICE_EXCEPT_FOR_KEY] = 'cpu'
         _, stderr = TestCase.run_process_no_exception(test_filter_file_template, env=env)
-        self.assertIn(f'Ran {test_bases_count-1} test', stderr.decode('ascii'))
+        self.assertIn(f'Ran {test_bases_count - 1} test', stderr.decode('ascii'))
 
         # Test with setting both should throw exception
         env[PYTORCH_TESTING_DEVICE_ONLY_FOR_KEY] = 'cpu'
@@ -470,7 +497,7 @@ if __name__ == '__main__':
         self.assertNotIn('OK', stderr.decode('ascii'))
 
 
-def make_assert_close_inputs(actual: Any, expected: Any) -> List[Tuple[Any, Any]]:
+def make_assert_close_inputs(actual: Any, expected: Any) -> list[tuple[Any, Any]]:
     """Makes inputs for :func:`torch.testing.assert_close` functions based on two examples.
 
     Args:
@@ -790,7 +817,6 @@ class TestAssertClose(TestCase):
         the test should mock a component to raise this instead of the regular behavior. We avoid using a builtin
         exception here to avoid triggering possible handling of them.
         """
-        pass
 
     @unittest.mock.patch("torch.testing._comparison.TensorLikePair.__init__", side_effect=UnexpectedException)
     def test_unexpected_error_originate(self, _):
@@ -1372,7 +1398,7 @@ class TestMakeTensor(TestCase):
     )
 
     @supported_dtypes
-    @parametrize("shape", [tuple(), (0,), (1,), (1, 1), (2,), (2, 3), (8, 16, 32)])
+    @parametrize("shape", [(), (0,), (1,), (1, 1), (2,), (2, 3), (8, 16, 32)])
     @parametrize("splat_shape", [False, True])
     def test_smoke(self, dtype, device, shape, splat_shape):
         t = torch.testing.make_tensor(*shape if splat_shape else shape, dtype=dtype, device=device)
@@ -1403,9 +1429,9 @@ class TestMakeTensor(TestCase):
 
     @supported_dtypes
     @parametrize("noncontiguous", [False, True])
-    @parametrize("shape", [tuple(), (0,), (1,), (1, 1), (2,), (2, 3), (8, 16, 32)])
+    @parametrize("shape", [(), (0,), (1,), (1, 1), (2,), (2, 3), (8, 16, 32)])
     def test_noncontiguous(self, dtype, device, noncontiguous, shape):
-        numel = functools.reduce(lambda a, b: a * b, shape, 1)
+        numel = functools.reduce(operator.mul, shape, 1)
 
         t = torch.testing.make_tensor(shape, dtype=dtype, device=device, noncontiguous=noncontiguous)
         self.assertEqual(t.is_contiguous(), not noncontiguous or numel < 2)
@@ -1462,15 +1488,7 @@ class TestMakeTensor(TestCase):
         low_inclusive, high_exclusive = {
             torch.bool: (0, 2),
             torch.uint8: (0, 10),
-            **{
-                signed_integral_dtype: (-9, 10)
-                for signed_integral_dtype in [
-                    torch.int8,
-                    torch.int16,
-                    torch.int32,
-                    torch.int64,
-                ]
-            },
+            **dict.fromkeys([torch.int8, torch.int16, torch.int32, torch.int64], (-9, 10)),
         }.get(dtype, (-9, 9))
 
         t = torch.testing.make_tensor(10_000, dtype=dtype, device=device, low=low_inclusive, high=high_exclusive)
@@ -1636,6 +1654,46 @@ class TestTestParametrization(TestCase):
         test_names = _get_test_names_for_test_class(TestParametrized)
         self.assertEqual(expected_test_names, test_names)
 
+    def test_reparametrize(self):
+
+        def include_is_even_arg(test_name, param_kwargs):
+            x = param_kwargs["x"]
+            is_even = x % 2 == 0
+            new_param_kwargs = dict(param_kwargs)
+            new_param_kwargs["is_even"] = is_even
+            is_even_suffix = "_even" if is_even else "_odd"
+            new_test_name = f"{test_name}{is_even_suffix}"
+            yield (new_test_name, new_param_kwargs)
+
+        def exclude_odds(test_name, param_kwargs):
+            x = param_kwargs["x"]
+            is_even = x % 2 == 0
+            yield None if not is_even else (test_name, param_kwargs)
+
+        class TestParametrized(TestCase):
+            @reparametrize(parametrize("x", range(5)), include_is_even_arg)
+            def test_foo(self, x, is_even):
+                pass
+
+            @reparametrize(parametrize("x", range(5)), exclude_odds)
+            def test_bar(self, x):
+                pass
+
+        instantiate_parametrized_tests(TestParametrized)
+
+        expected_test_names = [
+            'TestParametrized.test_bar_x_0',
+            'TestParametrized.test_bar_x_2',
+            'TestParametrized.test_bar_x_4',
+            'TestParametrized.test_foo_x_0_even',
+            'TestParametrized.test_foo_x_1_odd',
+            'TestParametrized.test_foo_x_2_even',
+            'TestParametrized.test_foo_x_3_odd',
+            'TestParametrized.test_foo_x_4_even',
+        ]
+        test_names = _get_test_names_for_test_class(TestParametrized)
+        self.assertEqual(expected_test_names, test_names)
+
     def test_subtest_names(self):
 
         class TestParametrized(TestCase):
@@ -1765,9 +1823,10 @@ class TestTestParametrizationDeviceType(TestCase):
             def test_device_dtype_specific(self, device, dtype):
                 pass
 
-        instantiate_device_type_tests(TestParametrized, locals(), only_for=device)
+        locals_dict = dict(locals())
+        instantiate_device_type_tests(TestParametrized, locals_dict, only_for=device)
 
-        device_cls = locals()[f'TestParametrized{device.upper()}']
+        device_cls = locals_dict[f'TestParametrized{device.upper()}']
         expected_test_names = [name.format(device_cls.__name__, device) for name in (
             '{}.test_device_dtype_specific_{}_float32',
             '{}.test_device_dtype_specific_{}_float64',
@@ -1789,9 +1848,10 @@ class TestTestParametrizationDeviceType(TestCase):
             def test_bar(self, device):
                 pass
 
-        instantiate_device_type_tests(TestParametrized, locals(), only_for=device)
+        locals_dict = dict(locals())
+        instantiate_device_type_tests(TestParametrized, locals_dict, only_for=device)
 
-        device_cls = locals()[f'TestParametrized{device.upper()}']
+        device_cls = locals_dict[f'TestParametrized{device.upper()}']
         expected_test_names = [name.format(device_cls.__name__, device) for name in (
             '{}.test_bar_{}',
             '{}.test_foo_{}')
@@ -1817,7 +1877,8 @@ class TestTestParametrizationDeviceType(TestCase):
                 pass
 
         with self.assertRaisesRegex(ValueError, 'An empty arg_values was passed'):
-            instantiate_device_type_tests(TestParametrized, locals(), only_for=device)
+            locals_dict = dict(locals())
+            instantiate_device_type_tests(TestParametrized, locals_dict, only_for=device)
 
     def test_default_names(self, device):
         device = self.device_type
@@ -1832,9 +1893,10 @@ class TestTestParametrizationDeviceType(TestCase):
                 pass
 
 
-        instantiate_device_type_tests(TestParametrized, locals(), only_for=device)
+        locals_dict = dict(locals())
+        instantiate_device_type_tests(TestParametrized, locals_dict, only_for=device)
 
-        device_cls = locals()[f'TestParametrized{device.upper()}']
+        device_cls = locals_dict[f'TestParametrized{device.upper()}']
         expected_test_names = [name.format(device_cls.__name__, device) for name in (
             '{}.test_default_names_x_0_{}',
             '{}.test_default_names_x_1_{}',
@@ -1845,6 +1907,34 @@ class TestTestParametrizationDeviceType(TestCase):
             '{}.test_two_things_default_names_x_2_y_3_{}',
             '{}.test_two_things_default_names_x_3_y_4_{}')
         ]
+        test_names = _get_test_names_for_test_class(device_cls)
+        self.assertEqual(expected_test_names, test_names)
+
+    def test_default_name_non_primitive(self, device):
+        device = self.device_type
+
+        class TestParametrized(TestCase):
+            @parametrize("x", [1, .5, "foo", object()])
+            def test_default_names(self, device, x):
+                pass
+
+            @parametrize("x,y", [(1, object()), (object(), .5), (object(), object())])
+            def test_two_things_default_names(self, device, x, y):
+                pass
+
+        locals_dict = dict(locals())
+        instantiate_device_type_tests(TestParametrized, locals_dict, only_for=device)
+
+        device_cls = locals_dict[f'TestParametrized{device.upper()}']
+        expected_test_names = sorted(name.format(device_cls.__name__, device) for name in (
+            '{}.test_default_names_x_1_{}',
+            '{}.test_default_names_x_0_5_{}',
+            '{}.test_default_names_x_foo_{}',
+            '{}.test_default_names_x3_{}',
+            '{}.test_two_things_default_names_x_1_y0_{}',
+            '{}.test_two_things_default_names_x1_y_0_5_{}',
+            '{}.test_two_things_default_names_x2_y2_{}')
+        )
         test_names = _get_test_names_for_test_class(device_cls)
         self.assertEqual(expected_test_names, test_names)
 
@@ -1866,9 +1956,10 @@ class TestTestParametrizationDeviceType(TestCase):
             def test_two_things_custom_names_alternate(self, device, x, y):
                 pass
 
-        instantiate_device_type_tests(TestParametrized, locals(), only_for=device)
+        locals_dict = dict(locals())
+        instantiate_device_type_tests(TestParametrized, locals_dict, only_for=device)
 
-        device_cls = locals()[f'TestParametrized{device.upper()}']
+        device_cls = locals_dict[f'TestParametrized{device.upper()}']
         expected_test_names = [name.format(device_cls.__name__, device) for name in (
             '{}.test_custom_names_bias_{}',
             '{}.test_custom_names_no_bias_{}',
@@ -1902,9 +1993,10 @@ class TestTestParametrizationDeviceType(TestCase):
             def test_two_things_custom_names(self, device, x, y):
                 pass
 
-        instantiate_device_type_tests(TestParametrized, locals(), only_for=device)
+        locals_dict = dict(locals())
+        instantiate_device_type_tests(TestParametrized, locals_dict, only_for=device)
 
-        device_cls = locals()[f'TestParametrized{device.upper()}']
+        device_cls = locals_dict[f'TestParametrized{device.upper()}']
         expected_test_names = [name.format(device_cls.__name__, device) for name in (
             '{}.test_custom_names_bias_{}',
             '{}.test_custom_names_no_bias_{}',
@@ -1924,15 +2016,15 @@ class TestTestParametrizationDeviceType(TestCase):
             def test_op_parametrized(self, device, dtype, op, flag):
                 pass
 
-        instantiate_device_type_tests(TestParametrized, locals(), only_for=device)
+        locals_dict = dict(locals())
+        instantiate_device_type_tests(TestParametrized, locals_dict, only_for=device)
 
-        device_cls = locals()[f'TestParametrized{device.upper()}']
+        device_cls = locals_dict[f'TestParametrized{device.upper()}']
         expected_test_names = []
         for op in op_db:
             for dtype in op.supported_dtypes(torch.device(device).type):
                 for flag_part in ('flag_disabled', 'flag_enabled'):
-                    expected_name = '{}.test_op_parametrized_{}_{}_{}_{}'.format(
-                        device_cls.__name__, op.formatted_name, flag_part, device, dtype_name(dtype))
+                    expected_name = f'{device_cls.__name__}.test_op_parametrized_{op.formatted_name}_{flag_part}_{device}_{dtype_name(dtype)}'  # noqa: B950
                     expected_test_names.append(expected_name)
 
         test_names = _get_test_names_for_test_class(device_cls)
@@ -1947,9 +2039,10 @@ class TestTestParametrizationDeviceType(TestCase):
             def test_module_parametrized(self, device, dtype, module_info, training, flag):
                 pass
 
-        instantiate_device_type_tests(TestParametrized, locals(), only_for=device)
+        locals_dict = dict(locals())
+        instantiate_device_type_tests(TestParametrized, locals_dict, only_for=device)
 
-        device_cls = locals()[f'TestParametrized{device.upper()}']
+        device_cls = locals_dict[f'TestParametrized{device.upper()}']
         expected_test_names = []
         for module_info in module_db:
             for dtype in module_info.dtypes:
@@ -2001,13 +2094,20 @@ class TestTestParametrizationDeviceType(TestCase):
             def test_other(self, device, dtype, op, y):
                 pass
 
+            @decorateIf(test_dec, lambda p: p['dtype'] == torch.int16)
+            @ops(op_db)
+            def test_three(self, device, dtype, op):
+                pass
+
         device = self.device_type
-        instantiate_device_type_tests(TestParametrized, locals(), only_for=device)
-        device_cls = locals()[f'TestParametrized{device.upper()}']
+        locals_dict = dict(locals())
+        instantiate_device_type_tests(TestParametrized, locals_dict, only_for=device)
+        device_cls = locals_dict[f'TestParametrized{device.upper()}']
 
         for test_func, name in _get_test_funcs_for_test_class(device_cls):
             should_apply = (name == 'test_op_param_test_op_x_2_cpu_float64' or
-                            ('test_other' in name and 'y_5' in name))
+                            ('test_other' in name and 'y_5' in name) or
+                            ('test_three' in name and name.endswith('_int16')))
             self.assertEqual(hasattr(test_func, '_decorator_applied'), should_apply)
 
     def test_modules_decorator_applies_module_and_param_specific_decorators(self, device):
@@ -2015,7 +2115,7 @@ class TestTestParametrizationDeviceType(TestCase):
 
         # Create a test module, ModuleInfo entry, and decorator to apply.
         class TestModule(torch.nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.x = torch.nn.Parameter(torch.randn(3))
 
@@ -2048,13 +2148,42 @@ class TestTestParametrizationDeviceType(TestCase):
             def test_other(self, device, dtype, module_info, training, y):
                 pass
 
+            @decorateIf(test_dec, lambda p: p['dtype'] == torch.float64)
+            @modules(module_db)
+            def test_three(self, device, dtype, module_info):
+                pass
+
         device = self.device_type
-        instantiate_device_type_tests(TestParametrized, locals(), only_for=device)
-        device_cls = locals()[f'TestParametrized{device.upper()}']
+        locals_dict = dict(locals())
+        instantiate_device_type_tests(TestParametrized, locals_dict, only_for=device)
+        device_cls = locals_dict[f'TestParametrized{device.upper()}']
 
         for test_func, name in _get_test_funcs_for_test_class(device_cls):
             should_apply = (name == 'test_module_param_TestModule_x_2_cpu_float64' or
-                            ('test_other' in name and 'y_5' in name))
+                            ('test_other' in name and 'y_5' in name) or
+                            ('test_three' in name and name.endswith('float64')))
+            self.assertEqual(hasattr(test_func, '_decorator_applied'), should_apply)
+
+    def test_param_specific_decoration(self, device):
+
+        def test_dec(func):
+            func._decorator_applied = True
+            return func
+
+        class TestParametrized(TestCase):
+            @decorateIf(test_dec, lambda params: params["x"] == 1 and params["y"])
+            @parametrize("x", range(5))
+            @parametrize("y", [False, True])
+            def test_param(self, x, y):
+                pass
+
+        device = self.device_type
+        locals_dict = dict(locals())
+        instantiate_device_type_tests(TestParametrized, locals_dict, only_for=device)
+        device_cls = locals_dict[f'TestParametrized{device.upper()}']
+
+        for test_func, name in _get_test_funcs_for_test_class(device_cls):
+            should_apply = ('test_param_x_1_y_True' in name)
             self.assertEqual(hasattr(test_func, '_decorator_applied'), should_apply)
 
     def test_dtypes_composition_valid(self, device):
@@ -2069,9 +2198,10 @@ class TestTestParametrizationDeviceType(TestCase):
             def test_parametrized(self, x, dtype):
                 pass
 
-        instantiate_device_type_tests(TestParametrized, locals(), only_for=device)
+        locals_dict = dict(locals())
+        instantiate_device_type_tests(TestParametrized, locals_dict, only_for=device)
 
-        device_cls = locals()[f'TestParametrized{device.upper()}']
+        device_cls = locals_dict[f'TestParametrized{device.upper()}']
         expected_test_names = [name.format(device_cls.__name__, device) for name in (
             '{}.test_parametrized_x_0_{}_float32',
             '{}.test_parametrized_x_0_{}_float64',
@@ -2096,7 +2226,8 @@ class TestTestParametrizationDeviceType(TestCase):
                 pass
 
         with self.assertRaisesRegex(RuntimeError, "handled multiple times"):
-            instantiate_device_type_tests(TestParametrized, locals(), only_for=device)
+            locals_dict = dict(locals())
+            instantiate_device_type_tests(TestParametrized, locals_dict, only_for=device)
 
         # Verify proper error behavior with @ops + @dtypes, as both try to set dtype.
 
@@ -2107,7 +2238,8 @@ class TestTestParametrizationDeviceType(TestCase):
                 pass
 
         with self.assertRaisesRegex(RuntimeError, "handled multiple times"):
-            instantiate_device_type_tests(TestParametrized, locals(), only_for=device)
+            locals_dict = dict(locals())
+            instantiate_device_type_tests(TestParametrized, locals_dict, only_for=device)
 
     def test_multiple_handling_of_same_param_error(self, device):
         # Test that multiple decorators handling the same param errors out.
@@ -2120,7 +2252,8 @@ class TestTestParametrizationDeviceType(TestCase):
                 pass
 
         with self.assertRaisesRegex(RuntimeError, "handled multiple times"):
-            instantiate_device_type_tests(TestParametrized, locals(), only_for=device)
+            locals_dict = dict(locals())
+            instantiate_device_type_tests(TestParametrized, locals_dict, only_for=device)
 
     @parametrize("x", [1, subtest(2, decorators=[unittest.expectedFailure]), 3])
     def test_subtest_expected_failure(self, device, x):
@@ -2142,12 +2275,15 @@ class TestImports(TestCase):
     @classmethod
     def _check_python_output(cls, program) -> str:
         return subprocess.check_output(
-            [sys.executable, "-W", "all", "-c", program],
+            [sys.executable, "-W", "always", "-c", program],
             stderr=subprocess.STDOUT,
             # On Windows, opening the subprocess with the default CWD makes `import torch`
             # fail, so just set CWD to this script's directory
             cwd=os.path.dirname(os.path.realpath(__file__)),).decode("utf-8")
 
+    # The test is flaky on ROCm and has been open and close multiple times
+    # https://github.com/pytorch/pytorch/issues/110040
+    @skipIfRocm
     def test_circular_dependencies(self) -> None:
         """ Checks that all modules inside torch can be imported
         Prevents regression reported in https://github.com/pytorch/pytorch/issues/77441 """
@@ -2157,8 +2293,8 @@ class TestImports(TestCase):
                            "torch.contrib.",  # something weird
                            "torch.testing._internal.distributed.",  # just fails
                            "torch.ao.pruning._experimental.",  # depends on pytorch_lightning, not user-facing
-                           "torch.onnx._internal.fx",  # depends on onnx-script
-                           "torch._inductor.triton_helpers",  # depends on triton
+                           "torch.onnx._internal",  # depends on onnx-script
+                           "torch._inductor.runtime.triton_helpers",  # depends on triton
                            "torch._inductor.codegen.cuda",  # depends on cutlass
                            ]
         # See https://github.com/pytorch/pytorch/issues/77801
@@ -2171,7 +2307,6 @@ class TestImports(TestCase):
             else:
                 ignored_modules.append("torch.distributed.nn.api.")
                 ignored_modules.append("torch.distributed.optim.")
-                ignored_modules.append("torch.distributed.pipeline.")
                 ignored_modules.append("torch.distributed.rpc.")
             ignored_modules.append("torch.testing._internal.dist_utils")
             # And these both end up with transitive dependencies on distributed
@@ -2180,7 +2315,7 @@ class TestImports(TestCase):
             ignored_modules.append("torch.testing._internal.common_distributed")
 
         torch_dir = os.path.dirname(torch.__file__)
-        for base, folders, files in os.walk(torch_dir):
+        for base, _, files in os.walk(torch_dir):
             prefix = os.path.relpath(base, os.path.dirname(torch_dir)).replace(os.path.sep, ".")
             for f in files:
                 if not f.endswith(".py"):
@@ -2207,13 +2342,24 @@ class TestImports(TestCase):
         out = self._check_python_output("import torch")
         self.assertEqual(out, "")
 
+    def test_not_import_sympy(self) -> None:
+        out = self._check_python_output("import torch;import sys;print('sympy' not in sys.modules)")
+        self.assertEqual(out.strip(), "True",
+                         "PyTorch should not depend on SymPy at import time as importing SymPy is *very* slow.\n"
+                         "See the beginning of the following blog post for how to profile and find which file is importing sympy:\n"
+                         "https://dev-discuss.pytorch.org/t/delving-into-what-happens-when-you-import-torch/1589\n\n"
+                         "If you hit this error, you may want to:\n"
+                         "  - Refactor your code to avoid depending on sympy files you may not need to depend\n"
+                         "  - Use TYPE_CHECKING if you are using sympy + strings if you are using sympy on type annotations\n"
+                         "  - Import things that depend on SymPy locally")
+
     @unittest.skipIf(IS_WINDOWS, "importing torch+CUDA on CPU results in warning")
     @parametrize('path', ['torch', 'functorch'])
     def test_no_mutate_global_logging_on_import(self, path) -> None:
         # Calling logging.basicConfig, among other things, modifies the global
         # logging state. It is not OK to modify the global logging state on
         # `import torch` (or other submodules we own) because users do not expect it.
-        expected = 'abcdefghijklmnopqrstuvwxyz'
+        expected = string.ascii_lowercase
         commands = [
             'import logging',
             f'import {path}',
@@ -2295,19 +2441,19 @@ class TestOpInfoSampleFunctions(TestCase):
     def test_opinfo_sample_generators(self, device, dtype, op):
         # Test op.sample_inputs doesn't generate multiple samples when called
         samples = op.sample_inputs(device, dtype)
-        self.assertIsInstance(samples, Generator)
+        self.assertIsInstance(samples, Iterator)
 
     @ops([op for op in op_db if op.reference_inputs_func is not None], dtypes=OpDTypes.any_one)
     def test_opinfo_reference_generators(self, device, dtype, op):
         # Test op.reference_inputs doesn't generate multiple samples when called
         samples = op.reference_inputs(device, dtype)
-        self.assertIsInstance(samples, Generator)
+        self.assertIsInstance(samples, Iterator)
 
     @ops([op for op in op_db if op.error_inputs_func is not None], dtypes=OpDTypes.none)
     def test_opinfo_error_generators(self, device, op):
         # Test op.error_inputs doesn't generate multiple inputs when called
         samples = op.error_inputs(device)
-        self.assertIsInstance(samples, Generator)
+        self.assertIsInstance(samples, Iterator)
 
 
 instantiate_device_type_tests(TestOpInfoSampleFunctions, globals())

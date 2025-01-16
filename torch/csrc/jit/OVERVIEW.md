@@ -53,6 +53,7 @@ Sections start with a reference to the source file where the code related to the
   - [Interpreter](#interpreter)
   - [Graph Executor](#graph-executor)
     - [Specialization](#specialization)
+    - [Dynamic Shapes Options](#dynamic-shapes-options)
     - [Pre-derivative Optimization](#pre-derivative-optimization)
     - [Required Passes](#required-passes)
     - [Derivative Preserving Optimization](#derivative-preserving-optimization)
@@ -66,6 +67,7 @@ Sections start with a reference to the source file where the code related to the
   - [Handling Mutability](#handling-mutability)
     - [Aliasing and mutation in the PyTorch API](#aliasing-and-mutation-in-the-pytorch-api)
     - [Aliasing and mutation annotations in FunctionSchema](#aliasing-and-mutation-annotations-in-functionschema)
+    - [Marking custom ops as side-effectful](#marking-custom-ops-as-side-effectful)
     - [Alias Analysis in the IR](#alias-analysis-in-the-ir)
     - [Writing optimization passes with `AliasDb`](#writing-optimization-passes-with-aliasdb)
 - [Profiling Programs](#profiling-programs)
@@ -74,6 +76,7 @@ Sections start with a reference to the source file where the code related to the
   - [Testing Autodiff](#testing-autodiff)
 - [Python Printer](#python-printer)
 - [Python Bindings](#python-bindings)
+  - [Graph Manipulation](#graph-manipulation)
 
 <!-- tocstop -->
 
@@ -195,7 +198,7 @@ Note that the chosen overload is not shown in any way in the textual output. If 
 
 Each node also has a set of attributes which are named integers, strings, floats, `Tensors`, subgraphs, or lists of these types. These are used by special primitive operators to encode additional data in the `Node`. For instance `prim::Constant` defines a compile-time constant value. For `Tensor` constants, it will have a single `Tensor` attribute with the name `attr::value` which contains the value of the constant.
 
-Attributes are _rarely used_. Operators like convolution or matrix-multiply have no attributes and take their arguments through the input list. This includes things that might be typically thought of as constants, like the stride of the convolution. In PyTorch, any of this information is potentially a dynamic property of the program so `Nodes` are always encoded in a way that allows these values to be dynamically determined. However, we recognize that many inputs are almost always constants, so we make it easy to quickly check if an input is constant and get its value with `c10::optional<IValue> Node::get(Symbol name)`, which returns an `IValue` (a concrete value for the input) in the case the node is constant and `nullopt` otherwise.
+Attributes are _rarely used_. Operators like convolution or matrix-multiply have no attributes and take their arguments through the input list. This includes things that might be typically thought of as constants, like the stride of the convolution. In PyTorch, any of this information is potentially a dynamic property of the program so `Nodes` are always encoded in a way that allows these values to be dynamically determined. However, we recognize that many inputs are almost always constants, so we make it easy to quickly check if an input is constant and get its value with `std::optional<IValue> Node::get(Symbol name)`, which returns an `IValue` (a concrete value for the input) in the case the node is constant and `nullopt` otherwise.
 
 ## Block ##
 
@@ -942,6 +945,22 @@ The executor *specializes* the `Graph` for the particular set of inputs. Special
 
 The ArgumentSpec object is used as a key into a cache that holds pre-optimized Code objects (held in an ExecutionPlan object). On a cache hit, an InterpreterState is created and the Code in the cache is run.
 
+### Dynamic Shapes Options ###
+
+In the "Specialization" section above, it is mentioned that "rank, but not size" is specialized on. This is partially true; size is sometimes specialized on because this specialization can sometimes produce more efficient code. By default, static shapes are specialized initially; if more shapes are observed then eventually the graph executor will generate a dynamic-shape version that doesn't depend on specific input shapes.
+
+To control these settings, you can use `torch._C._jit_set_fusion_strategy()`; it takes as an argument a list of tuples in the format `(type, number)` where `type` is a string in `{"DYNAMIC" ,"STATIC"}` and `number` is an integer.
+
+For example:
+```
+torch._C._jit_set_fusion_strategy([
+    ("STATIC", 2),
+    ("DYNAMIC", 20),
+])
+```
+
+This will make two attempts to generate static-shape graphs, and after that fall back to generating dynamic-shape graphs. If for some reason compilation keeps occuring (even with dynamic-shape graphs - e.g. this could happen if ranks or dtypes vary), after 20 compilation attempts the graph executor will fall back to running the graph without any attempts to compile it.
+
 ### Pre-derivative Optimization ###
 
 On a code cache miss, we generate a new optimized `Graph` on the fly (`compileSpec`). It starts by creating a copy of the initial `Graph` and setting the input types to the specialized `Tensor` types observed in this specialization. TensorType inputs to the `Graph` will get refined with types that know the device, number of dimensions, and requires grad state.
@@ -1342,6 +1361,20 @@ func: chunk(Tensor(a -> *) self, int chunks, int dim=0) -> Tensor(a)[]
 
 This annotation language is consumed by the `FunctionSchema` parser, which produces `AliasInfo` objects summarizing the aliasing relationships for each schema `Argument`.
 
+### Marking custom ops as side-effectful
+
+Sometimes, one will register a custom op that is side-effectful. For example, an op that does logging might take in a tensor (or other input), but not return anything. Without further annotation, these types of ops will often be dead-code-eliminated by TorchScript.
+
+To mark a custom op as side-effectful, or otherwise mark it to be handled conservatively by the alias analysis, it can be marked as `c10::AliasAnalysisKind::CONSERVATIVE`:
+
+```c++
+TORCH_LIBRARY(my_library, m) {
+  m.def(torch::schema(
+    "my_logging_op(Tensor data) -> ()",
+    c10::AliasAnalysisKind::CONSERVATIVE"));
+}
+```
+
 ### Alias Analysis in the IR
 
 [ir/alias_analysis.h](ir/alias_analysis.h)
@@ -1505,3 +1538,13 @@ def forward(self,
 # Python Bindings
 
 TODO: Script Module, torch.jit.trace, __constant__ handling, weak script modules
+
+## Graph Manipulation
+
+Python bindings for manipulating TorchScript IR exists in [python_ir.cpp](https://github.com/pytorch/pytorch/blob/58e7ec5843e63ee044e0a4f5aa2583a056a64078/torch/csrc/jit/python/python_ir.cpp#L4). In general, graph structures should look the same as the representation described above in [Core Program Representation](#core-program-representation).
+
+Things to watch out for:
+* You may need to first inline your graph (`torch._C._jit_pass_inline`) or recursively traverse CallFunction nodes (`for x in graph.findAllNodes("prim::CallFunction")`) if you want to recursively modify your graph and the functions it calls
+* To insert a graph after node n, use the context manager `with graph.insert_point_guard(new_node)`
+
+See more examples in [test_python_ir.py](https://github.com/pytorch/pytorch/blob/main/test/jit/test_python_ir.py)

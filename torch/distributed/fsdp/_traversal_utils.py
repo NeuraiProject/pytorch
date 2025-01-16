@@ -6,7 +6,7 @@ imports. For brevity, we may import the file as ``traversal_utils``.
 """
 
 import collections
-from typing import Deque, List, Set, Tuple
+from typing import Deque, List, Set
 
 import torch.nn as nn
 from torch.distributed._composable.contract import _get_registry
@@ -37,7 +37,10 @@ def _composable(module: nn.Module) -> bool:
     Returns if ``module`` can compose with ``fully_shard``.
     """
     # TODO: Add any other composable APIs that are mutually exclusive.
-    return "replicate" not in _get_registry(module)
+    registry = _get_registry(module)
+    if registry is None:
+        return True
+    return "replicate" not in registry
 
 
 # TODO (awgu): We may be able to remove this function if we retired the
@@ -45,7 +48,7 @@ def _composable(module: nn.Module) -> bool:
 # `FlatParameter` registration, which is not needed for `use_orig_params=True`.
 def _get_fsdp_states_with_modules(
     module: nn.Module,
-) -> Tuple[List[_FSDPState], List[nn.Module]]:
+) -> tuple[List[_FSDPState], List[nn.Module]]:
     """
     Returns a tuple containing:
     1. A list of the ``_FSDPState`` instances in the module tree rooted at

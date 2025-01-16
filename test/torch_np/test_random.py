@@ -9,10 +9,8 @@ import numpy as _np
 import pytest
 
 import torch._dynamo.config as config
-
 import torch._numpy as tnp
 from torch._numpy.testing import assert_equal
-
 from torch.testing._internal.common_utils import (
     instantiate_parametrized_tests,
     parametrize,
@@ -24,12 +22,8 @@ from torch.testing._internal.common_utils import (
 
 @contextmanager
 def control_stream(use_numpy=False):
-    oldstate = config.use_numpy_random_stream
-    config.use_numpy_random_stream = use_numpy
-    try:
+    with config.patch(use_numpy_random_stream=use_numpy):
         yield
-    finally:
-        config.use_numpy_random_stream = oldstate
 
 
 @instantiate_parametrized_tests
@@ -93,7 +87,7 @@ class TestShuffle(TestCase):
     @parametrize("use_numpy", [True, False])
     def test_2d(self, use_numpy):
         # np.shuffle only shuffles the first axis
-        ax = tnp.asarray([[1, 2, 3], [4, 5, 6]])
+        ax = tnp.asarray([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
         ox = ax.copy()
 
         tnp.random.seed(1234)

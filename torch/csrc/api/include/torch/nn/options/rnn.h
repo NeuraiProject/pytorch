@@ -5,8 +5,7 @@
 #include <torch/enum.h>
 #include <torch/types.h>
 
-namespace torch {
-namespace nn {
+namespace torch::nn {
 
 namespace detail {
 
@@ -164,8 +163,6 @@ struct TORCH_API RNNCellOptionsBase {
       int64_t hidden_size,
       bool bias,
       int64_t num_chunks);
-  virtual ~RNNCellOptionsBase() = default;
-
   TORCH_ARG(int64_t, input_size);
   TORCH_ARG(int64_t, hidden_size);
   TORCH_ARG(bool, bias);
@@ -234,5 +231,4 @@ struct TORCH_API GRUCellOptions {
   TORCH_ARG(bool, bias) = true;
 };
 
-} // namespace nn
-} // namespace torch
+} // namespace torch::nn

@@ -3,7 +3,6 @@
 #include <atomic>
 #include <cstdint>
 #include <deque>
-#include <iostream>
 #include <limits>
 #include <memory>
 #include <queue>
@@ -16,10 +15,9 @@
 
 #include <ATen/core/TensorBase.h>
 #include <c10/macros/Macros.h>
+#include <c10/util/ApproximateClock.h>
 #include <c10/util/Exception.h>
 #include <c10/util/Logging.h>
-#include <c10/util/Optional.h>
-#include <c10/util/StringUtil.h>
 #include <c10/util/flat_hash_map.h>
 #include <c10/util/irange.h>
 #include <torch/csrc/autograd/python_variable.h>
@@ -30,12 +28,11 @@
 #include <torch/csrc/utils/pybind.h>
 #include <torch/csrc/utils/python_compat.h>
 #include <torch/csrc/utils/python_strings.h>
+#include <optional>
 
 namespace py = pybind11;
 
-namespace torch {
-namespace profiler {
-namespace impl {
+namespace torch::profiler::impl {
 namespace {
 enum CallType { PyCall = 0, PyModuleCall, PyCCall, PyOptimizerCall };
 static constexpr size_t CallTypeSize = 4;
@@ -80,7 +77,7 @@ PyCodeObject* getCode<CallType::PyModuleCall>() {
     return (PyCodeObject*)res;
   }();
   return module_call_code;
-};
+}
 
 template <>
 PyCodeObject* getCode<CallType::PyOptimizerCall>() {
@@ -95,12 +92,10 @@ PyCodeObject* getCode<CallType::PyOptimizerCall>() {
     return (PyCodeObject*)res;
   }();
   return optimizer_step_code;
-};
+}
 
 } // namespace
-} // namespace impl
-} // namespace profiler
-} // namespace torch
+} // namespace torch::profiler::impl
 
 template <>
 struct std::hash<torch::profiler::impl::CodeLocation> {
@@ -109,9 +104,7 @@ struct std::hash<torch::profiler::impl::CodeLocation> {
   }
 };
 
-namespace torch {
-namespace profiler {
-namespace impl {
+namespace torch::profiler::impl {
 namespace {
 // ============================================================================
 // == CallTypeHelper: Tools for generic programming on specializations. =======
@@ -219,7 +212,7 @@ struct ExtendedPyCallConfig {
 
   struct Cache {
     // `nn.Module.forward` or `optim.Optimizer._optimizer_step_code`
-    c10::optional<CodeLocation> location_;
+    std::optional<CodeLocation> location_;
     ska::flat_hash_map<key_t, ClsAndParameters> cls_and_parameters_;
     ska::flat_hash_map<cls_t, at::StringView> cls_names_;
   };
@@ -258,7 +251,7 @@ class Callsite {
   using key_t = typename Config<C>::key_t;
 
   static_assert(
-      std::is_trivially_copyable<key_t>::value,
+      std::is_trivially_copyable_v<key_t>,
       "Key should be trivial, as it is passed by value.");
 
   template <typename U>
@@ -284,6 +277,10 @@ class ValueCache {
  public:
   ValueCache() = default;
   ValueCache(const ValueCache&) = delete;
+  ValueCache& operator==(const ValueCache&) = delete;
+  ValueCache(ValueCache&&) = default;
+  ValueCache& operator==(ValueCache&&) = delete;
+  ~ValueCache() = default;
 
   template <CallType C>
   void store(const typename Config<C>::key_t&, typename Config<C>::ephemeral_t);
@@ -293,13 +290,13 @@ class ValueCache {
     auto caller = load<CallType::PyCall>(callsite.caller_);
     TORCH_INTERNAL_ASSERT(!caller.module_info_.has_value());
     return ExtraFields<Config<C>::event_type>{
-        /*end_time_ns=*/std::numeric_limits<time_t>::min(),
+        /*end_time_ns=*/std::numeric_limits<c10::time_t>::min(),
         python_tid,
         caller.frame_state_,
         load<C>(callsite.value_)};
   }
 
-  c10::optional<TensorMetadata> recordIfTensor(py::handle p);
+  std::optional<TensorMetadata> recordIfTensor(py::handle p);
   std::vector<std::pair<std::string, TensorMetadata>> unpackTensorMap(
       const py::dict& tensor_map);
   void trimPrefixes();
@@ -347,10 +344,10 @@ TensorMetadata toTensorMetadata(PyObject* self) {
       m.layout_ == at::kStrided ? t.strides().vec() : std::vector<int64_t>()};
 }
 
-c10::optional<TensorMetadata> ValueCache::recordIfTensor(py::handle p) {
+std::optional<TensorMetadata> ValueCache::recordIfTensor(py::handle p) {
   return THPVariable_CheckExact(p.ptr())
-      ? c10::optional<TensorMetadata>{toTensorMetadata(p.ptr())}
-      : c10::nullopt;
+      ? std::optional<TensorMetadata>{toTensorMetadata(p.ptr())}
+      : std::nullopt;
 }
 
 std::vector<std::pair<std::string, TensorMetadata>> ValueCache::unpackTensorMap(
@@ -380,7 +377,7 @@ void ValueCache::store<CallType::PyCall>(const PyCallKey& key, no_ephemeral_t) {
 template <>
 ExtraFields<EventType::PyCall>::args_t ValueCache::load<CallType::PyCall>(
     const PyCallKey& key) const {
-  return {std::get<CallType::PyCall>(state_).at(key), c10::nullopt};
+  return {std::get<CallType::PyCall>(state_).at(key), std::nullopt};
 }
 
 template <>
@@ -420,7 +417,7 @@ ExtraFields<EventType::PyCall>::args_t ValueCache::load<CallType::PyModuleCall>(
   return {
       /*frame_state_=*/std::get<CallType::PyCall>(state_).at(*cache.location_),
       /*module_info_=*/std::move(info),
-      /*optimizer_info_=*/c10::nullopt};
+      /*optimizer_info_=*/std::nullopt};
 }
 
 template <>
@@ -464,8 +461,10 @@ ExtraFields<EventType::PyCall>::args_t ValueCache::load<
   OptimizerInfo info{
       key, cls, cache.cls_names_.at(cls), cls_and_parameters.parameters_};
   return {
-      /*frame_state_=*/std::get<CallType::PyCall>(state_).at(*cache.location_),
-      /*module_info_=*/c10::nullopt,
+      /*frame_state_=*/std::get<CallType::PyCall>(state_).at(
+          // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+          cache.location_.value()),
+      /*module_info_=*/std::nullopt,
       /*optimizer_info_=*/std::move(info)};
 }
 
@@ -554,18 +553,19 @@ struct TraceKeyCacheState {
 // `PyEval_SetProfile`.
 struct ThreadLocalResults;
 struct TraceContext {
-  PyObject_HEAD;
+  PyObject_HEAD
   ThreadLocalResults* thread_local_results_;
 };
 
 // CPython boilerplate to define `TraceContext` as a proper python object.
 static PyTypeObject TraceContextType = {
-    PyVarObject_HEAD_INIT(nullptr, 0) "TraceContext", /* tp_name */
+    PyVarObject_HEAD_INIT(nullptr, 0)
+    "TraceContext", /* tp_name */
     sizeof(TraceContext), /* tp_basicsize */
     0, /* tp_itemsize */
     nullptr, /* tp_dealloc */
     0,
-    /* tp_vectorcall_offset */ // NOLINT: modernize-use-nullptr
+    /* tp_vectorcall_offset */
     nullptr, /* tp_getattr */
     nullptr, /* tp_setattr */
     nullptr, /* tp_reserved */
@@ -603,8 +603,7 @@ static PyTypeObject TraceContextType = {
 
 class gil_and_restore_thread {
  public:
-  gil_and_restore_thread()
-      : gil_(), initial_thread_state_{PyThreadState_Get()} {}
+  gil_and_restore_thread() : initial_thread_state_{PyThreadState_Get()} {}
   ~gil_and_restore_thread() {
     PyThreadState_Swap(initial_thread_state_);
 
@@ -666,8 +665,8 @@ struct ThreadLocalResults {
   ValueCache* value_cache_;
   PythonTracer* active_tracer_;
   CallTypeHelper<TraceKeyCacheState>::tuple_type trace_keys_;
-  AppendOnlyList<approx_time_t, BLOCK_SIZE> exit_times_;
-  AppendOnlyList<approx_time_t, BLOCK_SIZE> c_exit_times_;
+  AppendOnlyList<c10::approx_time_t, BLOCK_SIZE> exit_times_;
+  AppendOnlyList<c10::approx_time_t, BLOCK_SIZE> c_exit_times_;
 };
 
 // ============================================================================
@@ -686,14 +685,15 @@ class PythonTracer final : public python_tracer::PythonTracerBase {
       PyObject* arg);
 
   void stop() override;
+  void restart() override;
   std::vector<std::shared_ptr<Result>> getEvents(
-      std::function<time_t(approx_time_t)> time_converter,
+      std::function<c10::time_t(c10::approx_time_t)> time_converter,
       std::vector<python_tracer::CompressedEvent>& enters,
-      time_t end_time_ns) override;
+      c10::time_t end_time_ns) override;
 
   struct StartFrame {
     TraceKey trace_key_;
-    approx_time_t start_time{};
+    c10::approx_time_t start_time{};
   };
 
  private:
@@ -713,7 +713,7 @@ class PythonTracer final : public python_tracer::PythonTracerBase {
   bool active_{false};
 
   torch::profiler::impl::RecordQueue* queue_;
-  PyInterpreterState* interpreter_;
+  PyInterpreterState* interpreter_{nullptr};
   PyCodeObject* module_call_code_;
   PyCodeObject* optimizer_hook_;
 
@@ -737,7 +737,7 @@ const std::vector<PyThreadState*> PythonTracer::interpreterThreads() const {
 
 PythonTracer::PythonTracer(torch::profiler::impl::RecordQueue* queue)
     : queue_(queue),
-      interpreter_(nullptr),
+
       module_call_code_(getCode<CallType::PyModuleCall>()),
       optimizer_hook_(getCode<CallType::PyOptimizerCall>()) {
   TORCH_CHECK(queue_ != nullptr);
@@ -799,7 +799,7 @@ PythonTracer::PythonTracer(torch::profiler::impl::RecordQueue* queue)
     //   cannot be round tripped via `sys.settrace(sys.gettrace())`
     PyEval_SetProfile(PythonTracer::pyProfileFn, (PyObject*)ctx);
   }
-};
+}
 
 void PythonTracer::stop() {
   gil_and_restore_thread gil;
@@ -814,6 +814,25 @@ void PythonTracer::stop() {
     auto lock_returned = active_lock_.compare_exchange_strong(active_, false);
     active_ = false;
     SOFT_ASSERT(lock_returned, "Failed to return python tracer lock.");
+  }
+}
+
+void PythonTracer::restart() {
+  gil_and_restore_thread gil;
+  active_ = active_lock_.compare_exchange_strong(active_, true);
+  if (!active_) {
+    TORCH_WARN(
+        "There is already an active Python tracer. "
+        "Refusing to register profile functions.");
+    return;
+  }
+  int cur_thread = 0;
+  for (const auto thread_state : interpreterThreads()) {
+    if (thread_state->c_profilefunc == nullptr) {
+      auto* ctx = thread_local_results_[cur_thread].ctx_;
+      PyThreadState_Swap(thread_state);
+      PyEval_SetProfile(PythonTracer::pyProfileFn, (PyObject*)ctx);
+    }
   }
 }
 
@@ -863,7 +882,7 @@ void PythonTracer::recordPyCall(
       return tls.intern<CallType::PyCall, E>(no_ephemeral_t(), frame, f_back);
     }
   }();
-  const auto time = getApproximateTime();
+  const auto time = c10::getApproximateTime();
   is_startup_frame ? start_frames_.push_back({key, time})
                    : queue_->getSubqueue()->emplace_py_call(key, time);
 }
@@ -879,7 +898,7 @@ void PythonTracer::recordCCall(
   //     `frame->f_back`.
   auto key = tls.intern<CallType::PyCCall, EventType::PyCCall>(
       arg, (void*)(fn->m_ml), frame);
-  queue_->getSubqueue()->emplace_py_call(key, getApproximateTime());
+  queue_->getSubqueue()->emplace_py_call(key, c10::getApproximateTime());
 }
 
 // ============================================================================
@@ -890,17 +909,17 @@ struct Exit {
     return t_ > other.t_;
   }
 
-  time_t t_;
+  c10::time_t t_;
   size_t python_tid_;
 };
 
 class PostProcess {
  public:
   PostProcess(
-      std::function<time_t(approx_time_t)> time_converter,
+      std::function<c10::time_t(c10::approx_time_t)> time_converter,
       std::deque<ThreadLocalResults>& tls,
       const ValueCache& value_cache,
-      time_t end_time_ns)
+      c10::time_t end_time_ns)
       : end_time_{end_time_ns}, time_converter_{std::move(time_converter)} {
     for (size_t python_tid : c10::irange(tls.size())) {
       CallTypeHelper<TraceKeyCacheState>::map(
@@ -936,7 +955,9 @@ class PostProcess {
   }
 
   template <EventType E, size_t N>
-  void addExits(AppendOnlyList<approx_time_t, N>& exits, size_t python_tid) {
+  void addExits(
+      AppendOnlyList<c10::approx_time_t, N>& exits,
+      size_t python_tid) {
     for (const auto i : exits) {
       get_state<E>().exits_.push({time_converter_(i), python_tid});
     }
@@ -961,21 +982,25 @@ class PostProcess {
       std::vector<std::shared_ptr<Result>>& out) {
     using stack_t = std::vector<std::shared_ptr<Result>>;
     const auto initial_size = out.size();
-    auto pop = [](stack_t& stack, time_t t) {
+    auto pop = [](stack_t& stack, c10::time_t t) {
       TORCH_INTERNAL_ASSERT(!stack.empty(), "Python replay stack is empty.");
-      c10::get<ExtraFields<E>>(stack.back()->extra_fields_).end_time_ns_ = t;
+      std::get<ExtraFields<E>>(stack.back()->extra_fields_).end_time_ns_ = t;
       stack.pop_back();
     };
 
     ska::flat_hash_map<size_t, stack_t> stacks;
     auto& state = get_state<E>();
+    // We already own the GIL at this point
     for (const auto& enter : enters) {
       auto fields_it = state.fields_.find(enter.key_);
       if (fields_it != state.fields_.end()) {
         while (!state.exits_.empty() &&
                state.exits_.top().t_ < enter.enter_t_) {
           auto& exit = state.exits_.top();
-          pop(stacks[exit.python_tid_], exit.t_);
+          auto& tstack = stacks[exit.python_tid_];
+          if (!tstack.empty()) {
+            pop(tstack, exit.t_);
+          }
           state.exits_.pop();
         }
         out.push_back(Result::create(
@@ -1000,9 +1025,9 @@ class PostProcess {
     ska::flat_hash_map<size_t, std::pair<size_t, kineto::DeviceAndResource>>
         tid_map;
     auto it = out.rbegin();
-    for (C10_UNUSED auto _ : c10::irange(initial_size, out.size())) {
+    for ([[maybe_unused]] auto _ : c10::irange(initial_size, out.size())) {
       const auto python_tid =
-          c10::get<ExtraFields<E>>((*it)->extra_fields_).python_tid_;
+          std::get<ExtraFields<E>>((*it)->extra_fields_).python_tid_;
       if ((*it)->start_tid_ == NoTID && SOFT_ASSERT(E == EventType::PyCall)) {
         const auto& tid_info =
             tid_map.insert({python_tid, {NoTID, kineto::DeviceAndResource()}})
@@ -1026,8 +1051,8 @@ class PostProcess {
     return std::get < E == EventType::PyCall ? 0 : 1 > (state_);
   }
 
-  time_t end_time_;
-  std::function<time_t(approx_time_t)> time_converter_;
+  c10::time_t end_time_;
+  std::function<c10::time_t(c10::approx_time_t)> time_converter_;
   std::tuple<State<EventType::PyCall>, State<EventType::PyCCall>> state_;
 };
 
@@ -1054,9 +1079,9 @@ struct PythonIDVisitor {
 };
 
 std::vector<std::shared_ptr<Result>> PythonTracer::getEvents(
-    std::function<time_t(approx_time_t)> time_converter,
+    std::function<c10::time_t(c10::approx_time_t)> time_converter,
     std::vector<python_tracer::CompressedEvent>& enters,
-    time_t end_time_ns) {
+    c10::time_t end_time_ns) {
   value_cache_.trimPrefixes();
   PostProcess post_process(
       std::move(time_converter),
@@ -1072,7 +1097,7 @@ std::vector<std::shared_ptr<Result>> PythonTracer::getEvents(
 
   PythonIDVisitor id_visitor;
   for (auto& i : out) {
-    c10::visit(id_visitor, i->extra_fields_);
+    std::visit(id_visitor, i->extra_fields_);
   }
 
   return out;
@@ -1099,12 +1124,12 @@ int PythonTracer::pyProfileFn(
 
     case PyTrace_EXCEPTION:
     case PyTrace_RETURN:
-      local_results.exit_times_.emplace_back(getApproximateTime());
+      local_results.exit_times_.emplace_back(c10::getApproximateTime());
       break;
 
     case PyTrace_C_EXCEPTION:
     case PyTrace_C_RETURN:
-      local_results.c_exit_times_.emplace_back(getApproximateTime());
+      local_results.c_exit_times_.emplace_back(c10::getApproximateTime());
       break;
   }
   return 0;
@@ -1115,14 +1140,9 @@ std::unique_ptr<python_tracer::PythonTracerBase> getTracer(
   return std::make_unique<PythonTracer>(queue);
 }
 } // namespace
-} // namespace impl
-} // namespace profiler
-} // namespace torch
+} // namespace torch::profiler::impl
 
-namespace torch {
-namespace autograd {
-namespace profiler {
-namespace python_tracer {
+namespace torch::autograd::profiler::python_tracer {
 
 void init() {
   pybind11::gil_scoped_acquire gil;
@@ -1130,7 +1150,4 @@ void init() {
   torch::profiler::impl::python_tracer::registerTracer(
       &torch::profiler::impl::getTracer);
 }
-} // namespace python_tracer
-} // namespace profiler
-} // namespace autograd
-} // namespace torch
+} // namespace torch::autograd::profiler::python_tracer

@@ -45,7 +45,7 @@ TORCH_API c10::intrusive_ptr<ConstantString> ConstantString::create(
 }
 
 TORCH_API c10::intrusive_ptr<ConstantString> ConstantString::create(
-    c10::string_view str_) {
+    std::string_view str_) {
   return c10::make_intrusive<ConstantString>(std::string(str_));
 }
 
@@ -73,11 +73,11 @@ bool operator==(const ivalue::EnumHolder& lhs, const ivalue::EnumHolder& rhs) {
   return lhs.name() == rhs.name() && *rhs.type() == *lhs.type();
 }
 
-const std::string ivalue::EnumHolder::qualifiedClassName() const {
+const std::string& ivalue::EnumHolder::qualifiedClassName() const {
   return type_->qualifiedClassName().qualifiedName();
 }
 
-const std::string ivalue::EnumHolder::unqualifiedClassName() const {
+const std::string& ivalue::EnumHolder::unqualifiedClassName() const {
   return type_->qualifiedClassName().name();
 }
 
@@ -258,7 +258,6 @@ void IValue::getSubValues(HashAliasedIValues& subValues) const {
     case Tag::Capsule:
       TORCH_CHECK_TYPE(
           false, "Cannot inspect value of type ", this->tagKind());
-      [[fallthrough]];
     default:
       // don't record scalars.
       break;
@@ -472,7 +471,7 @@ bool IValue::isOptionalTensorList() const {
     return false;
   }
   const auto& ty = static_cast<detail::ListImpl*>(payload.u.as_intrusive_ptr)->elementType;
-  const auto& expected_ty = c10::getTypePtr<c10::optional<at::Tensor>>();
+  const auto& expected_ty = c10::getTypePtr<std::optional<at::Tensor>>();
   return expected_ty == ty;
 }
 
@@ -570,12 +569,7 @@ static std::ostream& printMaybeAnnotatedDict(
 static std::ostream& printComplex(std::ostream & out, const IValue & v) {
   c10::complex<double> d = v.toComplexDouble();
   IValue real(d.real()), imag(std::abs(d.imag()));
-  auto sign = "";
-  if (d.imag() >= 0) {
-    sign = "+";
-  } else {
-    sign = "-";
-  }
+  auto sign = d.imag() >= 0 ? '+' : '-';
   return out << real << sign << imag << "j";
 }
 
@@ -611,7 +605,7 @@ std::ostream& IValue::repr(
       }
       auto orig_prec = out.precision();
       return out << std::setprecision(std::numeric_limits<double>::max_digits10)
-                 << d << std::setprecision(orig_prec);
+                 << d << std::setprecision(static_cast<int>(orig_prec));
     }
     case IValue::Tag::ComplexDouble: {
       return printComplex(out, v);
@@ -643,6 +637,13 @@ std::ostream& IValue::repr(
       out << "torch.device(";
       c10::printQuotedString(out, device_stream.str());
       return out << ")";
+    }
+    case IValue::Tag::Generator: {
+      auto generator = v.toGenerator();
+      out << "torch.Generator(device=";
+      c10::printQuotedString(out, generator.device().str());
+      out << ", seed=" << generator.current_seed() << ")";
+      return out;
     }
     case IValue::Tag::GenericDict:
       return printMaybeAnnotatedDict(out, v, formatter);
@@ -750,7 +751,7 @@ IValueComparator getLessThanComparator(const IValue& v) {
     torch::jit::Function* lt_func =
         checkObjectSortSchema(v.type()->expect<ClassType>(), why_not);
     if (!lt_func) {
-      AT_ERROR(why_not.str());
+      TORCH_CHECK(false, why_not.str());
     }
 
     return [lt_func](const IValue& a, const IValue& b) {
@@ -766,7 +767,7 @@ IValueComparator getLessThanComparator(const IValue& v) {
     };
   }
 
-  AT_ERROR("IValues of type: ", v.tagKind(), " are not comparable");
+  TORCH_CHECK(false, "IValues of type: ", v.tagKind(), " are not comparable");
 }
 
 IValueComparator getGreaterThanComparator(const IValue& v) {
@@ -800,7 +801,7 @@ std::ostream& operator<<(std::ostream & out, const IValue & v) {
       return out
         << std::setprecision(std::numeric_limits<double>::max_digits10)
         << v.toDouble()
-        << std::setprecision(orig_prec);
+        << std::setprecision(static_cast<int>(orig_prec));
     } case IValue::Tag::ComplexDouble: {
       return printComplex(out, v);
     } case IValue::Tag::Int:
@@ -861,7 +862,7 @@ std::ostream& operator<<(std::ostream & out, const IValue & v) {
     }
 
   }
-  AT_ERROR("Tag not found: ", v.tagKind());
+  return out << "<Invalid IValue tag=" << std::to_string(static_cast<uint32_t>(v.tag)) << ">";
 }
 
 #undef TORCH_FORALL_TAGS
@@ -880,14 +881,14 @@ c10::intrusive_ptr<ivalue::Object> ivalue::Object::create(
       StrongTypePtr(nullptr, std::move(classType)), numSlots);
 }
 
-IValue IValue::deepcopy(c10::optional<at::Device> device) const {
-  IValue::HashAliasedIValueMap memo;
+IValue IValue::deepcopy(std::optional<at::Device> device) const {
+  IValue::HashIdentityIValueMap memo;
   return deepcopy(memo, device);
 }
 
 IValue IValue::deepcopy(
-    IValue::HashAliasedIValueMap& memo,
-    c10::optional<at::Device> device) const {
+    IValue::HashIdentityIValueMap& memo,
+    std::optional<at::Device> device) const {
   if (memo.count(*this)) {
     return memo.at(*this);
   }
@@ -956,11 +957,12 @@ IValue IValue::deepcopy(
     case IValue::Tag::SymBool:
     case IValue::Tag::Bool:
     case IValue::Tag::Device:
+    case IValue::Tag::Generator:
     case IValue::Tag::Uninitialized: {
       copy = *this;
     } break;
     default: {
-      AT_ERROR("Can't deepcopy IValue with tag: ", tagKind());
+      TORCH_CHECK(false, "Can't deepcopy IValue with tag: ", tagKind());
     }
   }
   // NB: this doesn't work if an object contains itself, and it may
@@ -977,6 +979,7 @@ void IValue::reportToTensorTypeError() const {
 }
 
 std::string ivalue::Object::name() const {
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   return type()->name()->qualifiedName();
 }
 
@@ -1019,14 +1022,14 @@ c10::intrusive_ptr<ivalue::Object> ivalue::Object::copy_to_weak_compilation_ref(
 }
 
 c10::intrusive_ptr<ivalue::Object> ivalue::Object::deepcopy(
-    c10::optional<at::Device> device) const {
-  IValue::HashAliasedIValueMap memo;
+    std::optional<at::Device> device) const {
+  IValue::HashIdentityIValueMap memo;
   return deepcopy(memo, device);
 }
 
 c10::intrusive_ptr<ivalue::Object> ivalue::Object::deepcopy(
-    IValue::HashAliasedIValueMap& memo,
-    c10::optional<at::Device> device) const {
+    IValue::HashIdentityIValueMap& memo,
+    std::optional<at::Device> device) const {
   auto cu = type_.cu_;
   auto object = ivalue::Object::create(WeakOrStrongTypePtr(type_.cu_, type_.type_), type()->numAttributes());
   for (const auto i : c10::irange(slots_.size())) {
@@ -1042,7 +1045,7 @@ c10::intrusive_ptr<ivalue::Object> ivalue::Object::deepcopy(
       }
       err << ". Please define serialization methods via def_pickle() for "
             "this class.";
-      AT_ERROR(err.str());
+      TORCH_CHECK(false, err.str());
     }
     object->setSlot(i, slots_[i].deepcopy(memo, device));
   }
@@ -1112,9 +1115,9 @@ std::vector<c10::weak_intrusive_ptr<c10::StorageImpl>> ivalue::Future::extractSt
     value.getSubValues(sub_values);
     for (const at::IValue& sub_value : sub_values) {
       if (sub_value.isTensor()) {
-        auto tens = sub_value.toTensor();
+        auto const & tens = sub_value.toTensor();
         if (tens.is_sparse()) {
-          // sparse tensors have 2 storages! one for indices one for values
+          // sparse tensors have 2 storages! One for indices one for values
           auto coalesced = tens.coalesce();
           weakStorageImpls.emplace_back(coalesced.indices().storage().getWeakStorageImpl());
           weakStorageImpls.emplace_back(coalesced.values().storage().getWeakStorageImpl());
@@ -1128,26 +1131,25 @@ std::vector<c10::weak_intrusive_ptr<c10::StorageImpl>> ivalue::Future::extractSt
 }
 
 TORCH_API intrusive_ptr<ivalue::Future> collectAll(
-    List<intrusive_ptr<ivalue::Future>> srcs) {
+    const List<intrusive_ptr<ivalue::Future>>& srcs) {
   struct Ctx {
-    explicit Ctx(List<intrusive_ptr<ivalue::Future>> srcs)
+    explicit Ctx(const List<intrusive_ptr<ivalue::Future>>& srcs)
         : remaining(srcs.size()),
-          srcFutures(std::move(srcs)),
+          srcFutures(srcs),
           asIvalue(srcFutures),
           // No need to pass devices, because dstFuture won't directly contain
           // the value, it will contain the srcFutures (which have no DataPtrs).
           dstFuture(make_intrusive<ivalue::Future>(asIvalue.type())) {}
-    std::atomic<int32_t> remaining{0};
+    std::atomic<size_t> remaining{0};
     List<intrusive_ptr<ivalue::Future>> srcFutures;
     IValue asIvalue;
     intrusive_ptr<ivalue::Future> dstFuture;
   };
 
-  auto ctx = std::make_shared<Ctx>(std::move(srcs));
+  auto ctx = std::make_shared<Ctx>(srcs);
   if (ctx->srcFutures.empty()) {
     ctx->dstFuture->markCompleted(ctx->asIvalue);
   } else {
-    auto typePtr = ctx->srcFutures.get(0)->elementType();
     for (const auto i : c10::irange(ctx->srcFutures.size())) {
 
       std::function<void(ivalue::Future&)> func = [ctx](ivalue::Future& fut) {
@@ -1171,6 +1173,7 @@ TORCH_API intrusive_ptr<ivalue::Future> collectAll(
 
 namespace {
 
+#ifndef STRIP_ERROR_MESSAGES
 std::string formatSetOfDevices(const std::vector<c10::Device>& devices) {
   std::ostringstream oss;
   std::copy(
@@ -1179,17 +1182,18 @@ std::string formatSetOfDevices(const std::vector<c10::Device>& devices) {
       std::ostream_iterator<c10::Device>(oss, ", "));
   return oss.str();
 }
+#endif
 
 }
 
 TORCH_API intrusive_ptr<ivalue::Future> collectAny(
-    List<intrusive_ptr<ivalue::Future>> srcs) {
+    const List<intrusive_ptr<ivalue::Future>>& srcs) {
   if (srcs.empty()) {
     auto res = make_intrusive<ivalue::Future>(NoneType::get());
     res->markCompleted();
     return res;
   }
-  TypePtr typePtr = srcs.get(0)->elementType();
+  const TypePtr& typePtr = srcs.get(0)->elementType();
   const std::vector<c10::Device>& devices = srcs.get(0)->devices();
   for (const auto i : c10::irange(srcs.size())) {
     if (srcs.get(i)->completed()) {
@@ -1207,16 +1211,16 @@ TORCH_API intrusive_ptr<ivalue::Future> collectAny(
   }
   struct Ctx {
     explicit Ctx(
-        List<intrusive_ptr<ivalue::Future>> srcs,
+        const List<intrusive_ptr<ivalue::Future>>& srcs,
         TypePtr typePtr,
         std::vector<c10::Device> devices)
-        : srcFutures(std::move(srcs)),
-          dstFuture(make_intrusive<ivalue::Future>(typePtr, std::move(devices))) {}
+        : srcFutures(srcs),
+          dstFuture(make_intrusive<ivalue::Future>(std::move(typePtr), std::move(devices))) {}
     std::atomic<bool> done{false};
     List<intrusive_ptr<ivalue::Future>> srcFutures;
     intrusive_ptr<ivalue::Future> dstFuture;
   };
-  auto ctx = std::make_shared<Ctx>(std::move(srcs), typePtr, devices);
+  auto ctx = std::make_shared<Ctx>(srcs, typePtr, devices);
   std::function<void(ivalue::Future&)> func = [ctx](ivalue::Future& src) {
     if (!ctx->done.exchange(true)) {
       intrusive_ptr<ivalue::Future> dst = ctx->dstFuture;

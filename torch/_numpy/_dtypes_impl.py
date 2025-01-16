@@ -1,4 +1,6 @@
-"""Dtypes/scalar type implementtaions with torch dtypes.
+# mypy: ignore-errors
+
+"""Dtypes/scalar type implementaions with torch dtypes.
 
 Here `dtype` is always a torch.dtype, this module knows nothing about
 scalar types, wrapper dtypes or anything like that. PyTorch only.
@@ -6,6 +8,7 @@ scalar types, wrapper dtypes or anything like that. PyTorch only.
 from collections import namedtuple
 
 import torch
+
 
 # defaults : mimic NumPy, allow user control
 DefaultDTypes = namedtuple(

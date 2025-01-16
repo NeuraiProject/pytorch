@@ -25,14 +25,14 @@ from torch.testing._internal.common_utils import (
     run_tests,
 )
 
+
 if not dist.is_available():
     print("Distributed not available, skipping tests", file=sys.stderr)
     sys.exit(0)
 
 # bfloat16 is only supported by CUDA 11+
 BFLOAT16_AVAILABLE = torch.cuda.is_available() and (
-    (torch.version.cuda is not None and int(torch.version.cuda.split(".")[0]) >= 11)
-    or torch.version.hip is not None
+    torch.version.cuda is not None or torch.version.hip is not None
 )
 
 
@@ -94,7 +94,6 @@ class DummyHook:
         of a flattened tensor to all processes in a group.
         Currently a no-op.
         """
-        pass
 
     def dummy_hook_for_sharded_fsdp(
         self, state: DummyState, grad: torch.Tensor, output: torch.Tensor

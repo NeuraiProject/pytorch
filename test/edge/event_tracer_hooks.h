@@ -46,6 +46,22 @@ class EventTracerProfileScope final {
 };
 
 /**
+ * This class enables scope based profiling where needed using RAII.
+ * Profiling will be started when the object is created and will end
+ * when the object goes out of scope.
+ */
+class EventTracerProfileOpScope final {
+ public:
+  EventTracerProfileOpScope(EventTracer* event_tracer, const char* name) {};
+
+  ~EventTracerProfileOpScope() {};
+
+ private:
+  EventTracer* event_tracer_;
+  EventTracerEntry event_entry_;
+};
+
+/**
  * This class helps us set and then clear out the chain id and debug handle
  * values stored in the event tracer class using RAII. This is typically called
  * in the executor loop before entering the codegen layer to configure the chain
@@ -66,6 +82,9 @@ class EventTracerProfileInstructionScope final {
   EventTracer* event_tracer_;
 };
 
+void event_tracer_log_evalue(EventTracer* event_tracer, EValue& evalue) {
+  (void)evalue;
+}
 
 } // namespace internal
 } // namespace executor
